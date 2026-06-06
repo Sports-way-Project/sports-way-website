@@ -1,16 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatPrice } from "../lib/format";
-import {
-  getOrders,
-  getStoredJson,
-  getUsers,
-  saveOrders,
-  saveUsers,
-  setCurrentUser as persistCurrentUser,
-  STORAGE_KEYS,
-} from "../lib/storefront";
+import { createOrder, fetchCouponByCode, recordCouponUsage } from "../lib/storefrontApi";
 
-export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, setCart }) {
+export function CheckoutPage({ cart, changeQty, currentUser, requestPasswordReset, sessionUser, setCart, signIn, signUp }) {
   const [showLogin, setShowLogin] = useState(false);
   const [showCoupon, setShowCoupon] = useState(false);
   const [createAccount, setCreateAccount] = useState(false);
@@ -33,7 +25,7 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
     password: "",
     notes: "",
   });
-  const [loginState, setLoginState] = useState({ identity: "", password: "", remember: true });
+  const [loginState, setLoginState] = useState({ identity: "", password: "" });
 
   useEffect(() => {
     document.title = "Checkout - Sports Way";
@@ -73,38 +65,62 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
   }, [appliedCoupon, subtotal]);
   const total = Math.max(0, subtotal - discount) + shipping;
 
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const code = couponCode.trim().toUpperCase();
     if (!code) {
       return;
     }
 
-    const coupons = getStoredJson(STORAGE_KEYS.coupons, []);
-    const coupon = coupons.find((item) => String(item.code || "").toUpperCase() === code);
+    const coupon = await fetchCouponByCode(code);
     if (!coupon) {
       window.alert("Invalid coupon code.");
       return;
     }
 
-    setAppliedCoupon(coupon);
-  };
-
-  const handleLogin = (event) => {
-    event.preventDefault();
-    const users = getUsers();
-    const identity = loginState.identity.trim().toLowerCase();
-    const user = users.find((item) => String(item.email || "").toLowerCase() === identity || String(item.name || "").toLowerCase() === identity);
-    if (!user || user.password !== loginState.password) {
-      window.alert("Incorrect login details.");
+    if (coupon.limitPerCoupon !== null && Number(coupon.usedCount || 0) >= coupon.limitPerCoupon) {
+      window.alert("This coupon code has reached its usage limit.");
       return;
     }
 
-    persistCurrentUser(user, loginState.remember);
-    setCurrentUser(user, loginState.remember);
-    setShowLogin(false);
+    const userIdentifier = (currentUser?.email || billing.email || "").trim().toLowerCase();
+    if (coupon.limitPerUser !== null && userIdentifier) {
+      const userUseCount = Number(coupon.userUses?.[userIdentifier] || 0);
+      if (userUseCount >= coupon.limitPerUser) {
+        window.alert("You have already reached the usage limit for this coupon.");
+        return;
+      }
+    }
+
+    if (coupon.specificProducts?.length) {
+      const hasEligible = cart.some((item) => {
+        const itemName = String(item.name || "").toLowerCase();
+        return coupon.specificProducts.some((specific) => itemName.includes(String(specific).toLowerCase()));
+      });
+
+      if (!hasEligible) {
+        window.alert("This coupon is not valid for any items in your cart.");
+        return;
+      }
+    }
+
+    setAppliedCoupon(coupon);
   };
 
-  const handlePlaceOrder = (event) => {
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    try {
+      await signIn({
+        email: loginState.identity.trim(),
+        password: loginState.password,
+        guestCart: cart,
+      });
+      setShowLogin(false);
+    } catch (error) {
+      window.alert(error.message || "Incorrect login details.");
+    }
+  };
+
+  const handlePlaceOrder = async (event) => {
     event.preventDefault();
 
     if (!cart.length) {
@@ -119,25 +135,20 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
 
     let nextUser = currentUser;
     if (createAccount && !currentUser) {
-      const users = getUsers();
-      if (users.some((item) => String(item.email || "").toLowerCase() === billing.email.toLowerCase())) {
-        window.alert("An account with this email already exists.");
+      try {
+        nextUser = await signUp({
+          email: billing.email.trim(),
+          password: billing.password,
+          name: `${billing.firstName} ${billing.lastName}`.trim(),
+          phone: billing.phone.trim(),
+          billing_address: billing.address1,
+          shipping_address: billing.address1,
+          guestCart: cart,
+        });
+      } catch (error) {
+        window.alert(error.message || "Unable to create the account.");
         return;
       }
-
-      nextUser = {
-        id: `U${Date.now()}`,
-        name: `${billing.firstName} ${billing.lastName}`.trim(),
-        email: billing.email,
-        phone: billing.phone,
-        password: billing.password,
-        billing_address: billing.address1,
-        shipping_address: billing.address1,
-        created_at: new Date().toISOString(),
-      };
-      saveUsers([...users, nextUser]);
-      persistCurrentUser(nextUser, true);
-      setCurrentUser(nextUser, true);
     }
 
     const order = {
@@ -150,16 +161,25 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
       subtotal,
       shipping,
       discount,
+      coupon_code: appliedCoupon?.code || null,
       payment_method: paymentMethod === "cod" ? "Cash on delivery" : paymentMethod === "bank" ? "Direct Bank Transfer" : "Credit / Debit Card",
       status: paymentMethod === "bank" ? "Pending Payment" : "Processing",
       items: cart,
-      user_id: nextUser?.id || null,
+      notes: billing.notes,
+      user_id: nextUser?.id || sessionUser?.id || null,
     };
 
-    saveOrders([...getOrders(), order]);
-    window.localStorage.setItem(STORAGE_KEYS.latestOrder, JSON.stringify(order));
-    setCart([]);
-    window.location.href = "order-success.html";
+    try {
+      await createOrder(order);
+      if (appliedCoupon) {
+        const userIdentifier = (nextUser?.email || billing.email || "").trim().toLowerCase();
+        await recordCouponUsage(appliedCoupon, userIdentifier);
+      }
+      await setCart([]);
+      window.location.href = `order-success.html?order=${encodeURIComponent(order.id)}`;
+    } catch (error) {
+      window.alert(error.message || "Unable to place the order.");
+    }
   };
 
   return (
@@ -173,18 +193,28 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
             <form className="checkout-dropdown" onSubmit={handleLogin}>
               <p>If you have shopped with us before, enter your details below.</p>
               <div className="form-group">
-                <label>Username or email address</label>
-                <input value={loginState.identity} onChange={(event) => setLoginState((current) => ({ ...current, identity: event.target.value }))} />
+                <label>Email address</label>
+                <input type="email" value={loginState.identity} onChange={(event) => setLoginState((current) => ({ ...current, identity: event.target.value }))} />
               </div>
               <div className="form-group">
                 <label>Password</label>
                 <input type="password" value={loginState.password} onChange={(event) => setLoginState((current) => ({ ...current, password: event.target.value }))} />
               </div>
-              <div className="form-check">
-                <input id="remember-login" type="checkbox" checked={loginState.remember} onChange={(event) => setLoginState((current) => ({ ...current, remember: event.target.checked }))} />
-                <label htmlFor="remember-login">Remember me</label>
-              </div>
               <button className="btn btn-primary" type="submit">Log In</button>
+              <button
+                className="link-button"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await requestPasswordReset(loginState.identity.trim());
+                    window.alert("Password reset email sent.");
+                  } catch (error) {
+                    window.alert(error.message || "Unable to send the reset email.");
+                  }
+                }}
+              >
+                Lost your password?
+              </button>
             </form>
           ) : null}
 
@@ -265,7 +295,7 @@ export function CheckoutPage({ cart, changeQty, currentUser, setCurrentUser, set
                       </div>
                       <div className="form-group">
                         <label>Create account password</label>
-                        <input type="password" value={billing.password} onChange={(event) => setBilling((current) => ({ ...current, password: event.target.value }))} />
+                        <input type="password" value={billing.password} onChange={(event) => setBilling((current) => ({ ...current, password: event.target.value }))} required={createAccount} />
                       </div>
                     </div>
                   ) : null}

@@ -84,8 +84,11 @@ function renderRoute(path, props) {
           cart={props.cart}
           changeQty={props.changeQty}
           currentUser={props.currentUser}
+          requestPasswordReset={props.requestPasswordReset}
+          sessionUser={props.sessionUser}
           setCart={props.setCart}
-          setCurrentUser={props.setCurrentUser}
+          signIn={props.signIn}
+          signUp={props.signUp}
         />
       );
     case "my-account.html":
@@ -93,8 +96,15 @@ function renderRoute(path, props) {
         <AccountPage
           currentUser={props.currentUser}
           products={props.products}
+          requestPasswordReset={props.requestPasswordReset}
           removeWishlistItem={props.removeWishlistItem}
-          setCurrentUser={props.setCurrentUser}
+          saveProfile={props.saveProfile}
+          sessionUser={props.sessionUser}
+          signIn={props.signIn}
+          signOut={props.signOut}
+          signUp={props.signUp}
+          wishlist={props.wishlist}
+          cart={props.cart}
         />
       );
     case "order-success.html":
@@ -102,7 +112,14 @@ function renderRoute(path, props) {
     case "admin.html":
       return (
         <AdminPage
+          currentUser={props.currentUser}
           products={props.products}
+          requestPasswordReset={props.requestPasswordReset}
+          saveProfile={props.saveProfile}
+          sessionUser={props.sessionUser}
+          signIn={props.signIn}
+          signOut={props.signOut}
+          signUp={props.signUp}
           setProducts={props.setProducts}
         />
       );
@@ -121,9 +138,18 @@ function App() {
     setMobileMenuOpen,
     setOpenMobileDropdown,
   } = useMobileNav();
-  const { currentUser, setCurrentUser } = useAccount();
+  const {
+    authReady,
+    currentUser,
+    requestPasswordReset,
+    saveProfile,
+    sessionUser,
+    signIn,
+    signOut,
+    signUp,
+  } = useAccount();
   const { products, setProducts } = useMasterProducts();
-  const { wishlist, toggleWishlist, removeWishlistItem } = useWishlist(currentUser);
+  const { wishlist, toggleWishlist, removeWishlistItem } = useWishlist(sessionUser);
   const { hiddenCategories, hiddenSubcategories } = useVisibilitySettings();
   const {
     addToCart,
@@ -134,7 +160,7 @@ function App() {
     changeQty,
     setCart,
     setCartOpen,
-  } = useCart();
+  } = useCart(sessionUser);
   const {
     searchOpen,
     searchQuery,
@@ -150,9 +176,20 @@ function App() {
   const visibleFooterSocials = footerSocials;
   const hiddenCategoryForRoute = hiddenCategories.includes(pageToCategoryKey(currentPath));
 
+  if (!authReady) {
+    return null;
+  }
+
   if (isAdminRoute) {
     return renderRoute(currentPath, {
+      currentUser,
       products,
+      requestPasswordReset,
+      saveProfile,
+      sessionUser,
+      signIn,
+      signOut,
+      signUp,
       setProducts,
     });
   }
@@ -189,10 +226,15 @@ function App() {
         currentUser,
         hiddenSubcategories,
         products,
+        requestPasswordReset,
         removeWishlistItem,
+        saveProfile,
         setCart,
         setProducts,
-        setCurrentUser,
+        sessionUser,
+        signIn,
+        signOut,
+        signUp,
         toggleWishlist,
         wishlist,
       }) : renderRoute(currentPath, {
@@ -202,10 +244,15 @@ function App() {
         currentUser,
         hiddenSubcategories,
         products,
+        requestPasswordReset,
         removeWishlistItem,
+        saveProfile,
         setCart,
         setProducts,
-        setCurrentUser,
+        sessionUser,
+        signIn,
+        signOut,
+        signUp,
         toggleWishlist,
         wishlist,
       })}

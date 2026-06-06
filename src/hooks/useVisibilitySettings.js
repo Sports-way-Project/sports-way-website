@@ -1,25 +1,26 @@
 import { useEffect, useState } from "react";
-import { getHiddenCategories, getHiddenSubcategories } from "../lib/storefront";
+import { fetchVisibilitySettings } from "../lib/storefrontApi";
 
 export function useVisibilitySettings() {
-  const [hiddenCategories, setHiddenCategories] = useState(() => getHiddenCategories());
-  const [hiddenSubcategories, setHiddenSubcategories] = useState(() => getHiddenSubcategories());
+  const [hiddenCategories, setHiddenCategories] = useState([]);
+  const [hiddenSubcategories, setHiddenSubcategories] = useState([]);
 
   useEffect(() => {
-    const refresh = () => {
-      setHiddenCategories(getHiddenCategories());
-      setHiddenSubcategories(getHiddenSubcategories());
+    let active = true;
+
+    const refresh = async () => {
+      const nextSettings = await fetchVisibilitySettings();
+      if (!active) {
+        return;
+      }
+
+      setHiddenCategories(nextSettings.hiddenCategories);
+      setHiddenSubcategories(nextSettings.hiddenSubcategories);
     };
 
-    window.addEventListener("storage", refresh);
-    window.addEventListener("focus", refresh);
-    window.addEventListener("hidden_categories", refresh);
-    window.addEventListener("hidden_subcategories", refresh);
+    refresh();
     return () => {
-      window.removeEventListener("storage", refresh);
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("hidden_categories", refresh);
-      window.removeEventListener("hidden_subcategories", refresh);
+      active = false;
     };
   }, []);
 

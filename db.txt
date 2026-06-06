@@ -1,43 +1,30 @@
-SportsWay Supabase reverse-engineered setup
-===========================================
+SportsWay Supabase bootstrap
+============================
 
-This is a best-effort schema from the code in this repo.
+This file matches the current React app after the Supabase migration.
 
-Confirmed from code:
-- Supabase project URL: https://punmneggsgjohiaqjeki.supabase.co
-- Storage bucket name: product-images
-- Tables touched by code: products, orders
-- Storage touched by code: storage.objects in bucket product-images
+What the app now expects:
+- Supabase Auth for customer/admin identity
+- `profiles` table for account metadata and admin roles
+- `products` for the live catalog
+- `site_settings` for hidden categories, hidden subcategories, and saved attributes
+- `cart_items` for cross-page carts
+- `wishlist_items` for wishlists
+- `coupons` for coupon rules and usage counts
+- `orders` for checkout records
+- `product-images` storage bucket for optional admin uploads
 
-Not backed by Supabase in the current React app:
-- users
-- coupons
-- wishlist
-- hidden categories / hidden subcategories
-- admin auth / OTP / password reset
-
-Those are all localStorage/sessionStorage right now.
-
-Important behavior note:
-- The current React admin page reads orders from Supabase and upserts products to Supabase.
-- The current React checkout page does NOT insert orders into Supabase.
-- The old legacy checkout did insert orders into Supabase. That is why the orders table still makes sense to keep.
-
-Recommended use:
-- Run the SQL below in the Supabase SQL editor.
-- Then use the admin page to sync products and upload product images.
+Important runtime assumptions:
+- Disable email confirmation in Supabase Auth if you want immediate sign-up/login from the current UI.
+- Enable Anonymous sign-ins if you want guest carts and guest wishlists to persist across page loads.
+- Existing catalog images stay as normal `/Image/...` paths. They do not need to be uploaded to Supabase Storage unless you add new inline/file images through the admin.
 
 
 -- =========================================================
--- 1. Extensions
+-- 1. Extensions and helpers
 -- =========================================================
 
 create extension if not exists pgcrypto;
-
-
--- =========================================================
--- 2. Utility trigger for updated_at
--- =========================================================
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -49,9 +36,50 @@ begin
 end;
 $$;
 
+create or replace function public.is_admin(check_user_id uuid default auth.uid())
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1
+    from public.profiles
+    where id = check_user_id
+      and role = 'admin'
+  );
+$$;
+
 
 -- =========================================================
--- 3. Products table
+-- 2. Profiles
+-- =========================================================
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text not null unique,
+  name text not null default '',
+  phone text not null default '',
+  billing_address text not null default '',
+  shipping_address text not null default '',
+  role text not null default 'customer'
+    check (role in ('customer', 'admin')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_login timestamptz not null default now()
+);
+
+create index if not exists profiles_role_idx on public.profiles (role);
+create index if not exists profiles_created_at_idx on public.profiles (created_at desc);
+
+drop trigger if exists profiles_set_updated_at on public.profiles;
+create trigger profiles_set_updated_at
+before update on public.profiles
+for each row
+execute function public.set_updated_at();
+
+
+-- =========================================================
+-- 3. Products
 -- =========================================================
 
 create table if not exists public.products (
@@ -64,11 +92,11 @@ create table if not exists public.products (
   stock_status text not null default 'instock'
     check (stock_status in ('instock', 'outofstock', 'onbackorder')),
   stock_count integer,
-  badge text,
-  img text,
-  image text,
-  img_hover text,
-  cover text,
+  badge text not null default '',
+  img text not null default '',
+  image text not null default '',
+  img_hover text not null default '',
+  cover text not null default '',
   gallery text[] not null default '{}',
   short_desc text not null default '',
   description text not null default '',
@@ -93,33 +121,140 @@ execute function public.set_updated_at();
 
 
 -- =========================================================
--- 4. Orders table
+-- 4. Site settings
+-- =========================================================
+
+create table if not exists public.site_settings (
+  key text primary key,
+  value jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists site_settings_set_updated_at on public.site_settings;
+create trigger site_settings_set_updated_at
+before update on public.site_settings
+for each row
+execute function public.set_updated_at();
+
+insert into public.site_settings (key, value)
+values
+  ('hidden_categories', '[]'::jsonb),
+  ('hidden_subcategories', '[]'::jsonb),
+  ('saved_attributes', '[]'::jsonb)
+on conflict (key) do nothing;
+
+
+-- =========================================================
+-- 5. Cart and wishlist
+-- =========================================================
+
+create table if not exists public.cart_items (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  cart_id text not null,
+  product_id bigint not null references public.products(id) on delete cascade,
+  name text not null,
+  price numeric(12,2) not null default 0,
+  image text not null default '',
+  qty integer not null check (qty > 0),
+  category text not null default '',
+  categories text[] not null default '{}',
+  variation jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, cart_id)
+);
+
+create index if not exists cart_items_user_idx on public.cart_items (user_id);
+
+drop trigger if exists cart_items_set_updated_at on public.cart_items;
+create trigger cart_items_set_updated_at
+before update on public.cart_items
+for each row
+execute function public.set_updated_at();
+
+create table if not exists public.wishlist_items (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  product_id bigint not null references public.products(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, product_id)
+);
+
+create index if not exists wishlist_items_user_idx on public.wishlist_items (user_id);
+
+
+-- =========================================================
+-- 6. Coupons
+-- =========================================================
+
+create table if not exists public.coupons (
+  code text primary key,
+  discount_type text not null default 'percentage'
+    check (discount_type in ('percentage', 'fixed_cart', 'fixed_product')),
+  discount numeric(12,2) not null default 0,
+  limit_per_coupon integer,
+  limit_per_items integer,
+  limit_per_user integer,
+  specific_products text[] not null default '{}',
+  used_count integer not null default 0,
+  user_uses jsonb not null default '{}'::jsonb,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists coupons_set_updated_at on public.coupons;
+create trigger coupons_set_updated_at
+before update on public.coupons
+for each row
+execute function public.set_updated_at();
+
+insert into public.coupons (
+  code,
+  discount_type,
+  discount,
+  limit_per_coupon,
+  limit_per_items,
+  limit_per_user,
+  specific_products,
+  used_count,
+  user_uses,
+  active
+)
+values
+  ('WELCOME10', 'percentage', 10, null, null, 1, '{}', 0, '{}'::jsonb, true),
+  ('SPORTSWAY20', 'percentage', 20, null, null, 1, '{}', 0, '{}'::jsonb, true),
+  ('OFFER50', 'percentage', 50, 5, 2, 1, '{}', 0, '{}'::jsonb, true)
+on conflict (code) do nothing;
+
+
+-- =========================================================
+-- 7. Orders
 -- =========================================================
 
 create table if not exists public.orders (
   id uuid primary key default gen_random_uuid(),
   order_id text not null unique,
-  customer_name text,
-  email text,
-  phone text,
-  user_id text,
-  payment_method text,
-  status text not null default 'Processing',
+  user_id uuid references auth.users(id) on delete set null,
+  customer_name text not null default '',
+  email text not null default '',
+  phone text not null default '',
+  total numeric(12,2) not null default 0,
   subtotal numeric(12,2) not null default 0,
   shipping numeric(12,2) not null default 0,
   discount numeric(12,2) not null default 0,
-  total numeric(12,2) not null default 0,
-  coupon_code text,
+  coupon_code text references public.coupons(code) on delete set null,
+  payment_method text not null default '',
+  status text not null default 'Processing',
+  notes text not null default '',
   items jsonb not null default '[]'::jsonb,
-  notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+create index if not exists orders_user_idx on public.orders (user_id);
 create index if not exists orders_created_at_idx on public.orders (created_at desc);
-create index if not exists orders_email_idx on public.orders (email);
 create index if not exists orders_status_idx on public.orders (status);
-create index if not exists orders_user_id_idx on public.orders (user_id);
 
 drop trigger if exists orders_set_updated_at on public.orders;
 create trigger orders_set_updated_at
@@ -129,29 +264,57 @@ execute function public.set_updated_at();
 
 
 -- =========================================================
--- 5. Grants
+-- 8. Grants
 -- =========================================================
 
 grant usage on schema public to anon, authenticated;
-grant select, insert, update on public.products to anon, authenticated;
-grant select, insert, update on public.orders to anon, authenticated;
+
+grant select on public.products to anon, authenticated;
+grant select on public.site_settings to anon, authenticated;
+grant select on public.coupons to anon, authenticated;
+
+grant select, insert, update on public.profiles to authenticated;
+grant select, insert, update, delete on public.cart_items to authenticated;
+grant select, insert, update, delete on public.wishlist_items to authenticated;
+grant select, insert on public.orders to authenticated;
 
 
 -- =========================================================
--- 6. RLS
+-- 9. Row Level Security
 -- =========================================================
---
--- This is compatibility mode for the current browser-only app.
--- It is intentionally permissive because the app writes directly
--- from the public anon client.
---
--- Do not use this for a real production store without replacing
--- client-side writes with a trusted backend, Edge Function, or
--- service-role flow.
 
+alter table public.profiles enable row level security;
 alter table public.products enable row level security;
+alter table public.site_settings enable row level security;
+alter table public.cart_items enable row level security;
+alter table public.wishlist_items enable row level security;
+alter table public.coupons enable row level security;
 alter table public.orders enable row level security;
 
+-- Profiles
+drop policy if exists "profiles_select_self_or_admin" on public.profiles;
+create policy "profiles_select_self_or_admin"
+on public.profiles
+for select
+to authenticated
+using (auth.uid() = id or public.is_admin());
+
+drop policy if exists "profiles_insert_self_or_admin" on public.profiles;
+create policy "profiles_insert_self_or_admin"
+on public.profiles
+for insert
+to authenticated
+with check (auth.uid() = id or public.is_admin());
+
+drop policy if exists "profiles_update_self_or_admin" on public.profiles;
+create policy "profiles_update_self_or_admin"
+on public.profiles
+for update
+to authenticated
+using (auth.uid() = id or public.is_admin())
+with check (auth.uid() = id or public.is_admin());
+
+-- Products
 drop policy if exists "products_public_read" on public.products;
 create policy "products_public_read"
 on public.products
@@ -159,46 +322,90 @@ for select
 to anon, authenticated
 using (true);
 
-drop policy if exists "products_public_insert" on public.products;
-create policy "products_public_insert"
+drop policy if exists "products_admin_write" on public.products;
+create policy "products_admin_write"
 on public.products
-for insert
-to anon, authenticated
-with check (true);
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
 
-drop policy if exists "products_public_update" on public.products;
-create policy "products_public_update"
-on public.products
-for update
-to anon, authenticated
-using (true)
-with check (true);
-
-drop policy if exists "orders_public_read" on public.orders;
-create policy "orders_public_read"
-on public.orders
+-- Site settings
+drop policy if exists "site_settings_public_read" on public.site_settings;
+create policy "site_settings_public_read"
+on public.site_settings
 for select
 to anon, authenticated
 using (true);
 
-drop policy if exists "orders_public_insert" on public.orders;
-create policy "orders_public_insert"
+drop policy if exists "site_settings_admin_write" on public.site_settings;
+create policy "site_settings_admin_write"
+on public.site_settings
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- Cart items
+drop policy if exists "cart_items_own_rows" on public.cart_items;
+create policy "cart_items_own_rows"
+on public.cart_items
+for all
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+-- Wishlist items
+drop policy if exists "wishlist_items_own_rows" on public.wishlist_items;
+create policy "wishlist_items_own_rows"
+on public.wishlist_items
+for all
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+-- Coupons
+drop policy if exists "coupons_public_read" on public.coupons;
+create policy "coupons_public_read"
+on public.coupons
+for select
+to anon, authenticated
+using (active = true or public.is_admin());
+
+drop policy if exists "coupons_admin_write" on public.coupons;
+create policy "coupons_admin_write"
+on public.coupons
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
+
+-- Orders
+drop policy if exists "orders_select_self_or_admin" on public.orders;
+create policy "orders_select_self_or_admin"
+on public.orders
+for select
+to authenticated
+using (auth.uid() = user_id or public.is_admin());
+
+drop policy if exists "orders_insert_self_or_admin" on public.orders;
+create policy "orders_insert_self_or_admin"
 on public.orders
 for insert
-to anon, authenticated
-with check (true);
+to authenticated
+with check (auth.uid() = user_id or public.is_admin());
 
-drop policy if exists "orders_public_update" on public.orders;
-create policy "orders_public_update"
+drop policy if exists "orders_admin_update" on public.orders;
+create policy "orders_admin_update"
 on public.orders
 for update
-to anon, authenticated
-using (true)
-with check (true);
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
 
 
 -- =========================================================
--- 7. Storage bucket
+-- 10. Storage bucket and policies
 -- =========================================================
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -214,13 +421,6 @@ set public = excluded.public,
     file_size_limit = excluded.file_size_limit,
     allowed_mime_types = excluded.allowed_mime_types;
 
-
--- =========================================================
--- 8. Storage policies
--- =========================================================
---
--- Again: permissive compatibility mode for the current client-side app.
-
 drop policy if exists "product_images_public_read" on storage.objects;
 create policy "product_images_public_read"
 on storage.objects
@@ -228,41 +428,138 @@ for select
 to anon, authenticated
 using (bucket_id = 'product-images');
 
-drop policy if exists "product_images_public_insert" on storage.objects;
-create policy "product_images_public_insert"
+drop policy if exists "product_images_admin_insert" on storage.objects;
+create policy "product_images_admin_insert"
 on storage.objects
 for insert
-to anon, authenticated
-with check (bucket_id = 'product-images');
+to authenticated
+with check (bucket_id = 'product-images' and public.is_admin());
 
-drop policy if exists "product_images_public_update" on storage.objects;
-create policy "product_images_public_update"
+drop policy if exists "product_images_admin_update" on storage.objects;
+create policy "product_images_admin_update"
 on storage.objects
 for update
-to anon, authenticated
-using (bucket_id = 'product-images')
-with check (bucket_id = 'product-images');
+to authenticated
+using (bucket_id = 'product-images' and public.is_admin())
+with check (bucket_id = 'product-images' and public.is_admin());
+
+drop policy if exists "product_images_admin_delete" on storage.objects;
+create policy "product_images_admin_delete"
+on storage.objects
+for delete
+to authenticated
+using (bucket_id = 'product-images' and public.is_admin());
 
 
 -- =========================================================
--- 9. Optional sanity checks
--- =========================================================
-
-select 'products' as table_name, count(*) as row_count from public.products
-union all
-select 'orders' as table_name, count(*) as row_count from public.orders;
-
-
--- =========================================================
--- 10. Operational notes
+-- 11. Auth / admin operational notes
 -- =========================================================
 --
--- 1. After creating this schema, open admin.html in the app and use:
---    - "Migrate Images and Sync to Supabase" for product images
---    - "Sync Products to Supabase" for product rows
+-- A. In Supabase Dashboard:
+--    1. Enable Email provider.
+--    2. Disable email confirmation if you want immediate sign-up from the current UI.
+--    3. Enable Anonymous sign-ins if you want guest carts/wishlists across page loads.
 --
--- 2. If you want checkout to save orders into Supabase again,
---    the current React CheckoutPage needs to be wired for insert().
+-- B. Create your first admin:
+--    1. Create a user through Supabase Auth or sign up through the site.
+--    2. Promote that profile:
 --
--- 3. If you want a secure production setup, change all public write
---    paths to server-side or Edge Function writes and tighten RLS.
+--       update public.profiles
+--       set role = 'admin'
+--       where email = 'your-admin@email.com';
+--
+-- C. Initial product data:
+--    The current app reads products only from the `products` table.
+--    This file now includes the current catalog seed, with image paths kept as `/Image/...`.
+--    You can still overwrite or extend that catalog later through `admin.html`.
+--
+-- D. Quick sanity checks:
+--
+--    select count(*) as profiles_count from public.profiles;
+--    select count(*) as products_count from public.products;
+--    select count(*) as coupons_count from public.coupons;
+--    select count(*) as orders_count from public.orders;
+
+-- =========================================================
+-- 12. Initial catalog seed
+-- =========================================================
+
+insert into public.products (
+  id, name, category, categories, price, old_price, stock_status, stock_count, badge, img, image, img_hover, cover, gallery, short_desc, description, featured, rating, reviews, variations, attributes
+)
+values
+  (1, 'ProRun 3000 Treadmill', 'cardio', ARRAY['gym-equipment', 'cardio', 'treadmills'], 4599, 5499, 'instock', null, 'Best Seller', '/Image/treadmills.png', '/Image/treadmills.png', '', '/Image/treadmills.png', ARRAY[]::text[], 'Commercial treadmill with shock absorption and smart tracking.', 'The ProRun 3000 Treadmill is built for commercial facilities and serious home gyms. It combines a stable running platform, responsive console controls, and reliable performance for long daily training sessions.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (2, 'SpinMax Pro Bike', 'cardio', ARRAY['gym-equipment', 'cardio', 'bikes'], 2599, 3199, 'instock', null, 'Sale', '/Image/bikes.webp', '/Image/bikes.webp', '', '/Image/bikes.webp', ARRAY[]::text[], 'Magnetic resistance indoor cycle for studios and training rooms.', 'SpinMax Pro Bike delivers smooth magnetic resistance, strong frame stability, and a clean ride feel designed for studio classes and daily endurance sessions.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (3, 'PowerRow Elite Rower', 'cardio', ARRAY['gym-equipment', 'cardio', 'rowers'], 3099, 3799, 'instock', null, 'Popular', '/Image/rowers.webp', '/Image/rowers.webp', '', '/Image/rowers.webp', ARRAY[]::text[], 'Low-impact full body rower with performance monitor.', 'Designed for conditioning rooms and home training setups, the PowerRow Elite Rower supports full body cardio work with smooth pull resistance and a compact footprint.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (4, 'Elliptical Cross Trainer', 'cardio', ARRAY['gym-equipment', 'cardio', 'ellipticals'], 3999, 4999, 'instock', null, 'New', '/Image/ellipticals.webp', '/Image/ellipticals.webp', '', '/Image/ellipticals.webp', ARRAY[]::text[], 'Low-impact cross trainer for full body conditioning.', 'This elliptical cross trainer combines a quiet drive system with stable foot paths to support long endurance sessions without excessive joint loading.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (5, 'Adjustable Dumbbell Set', 'strength', ARRAY['gym-equipment', 'strength', 'weights'], 1299, 1599, 'instock', null, 'Top Rated', '/Image/Weights.jpg', '/Image/Weights.jpg', '', '/Image/Weights.jpg', ARRAY[]::text[], 'Space-saving dumbbell system for progressive strength work.', 'The adjustable dumbbell set covers a broad training range in a compact footprint, making it a strong fit for PT studios, home gyms, and accessory rooms.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (6, 'Olympic Barbell + Weight Set', 'strength', ARRAY['gym-equipment', 'strength', 'bars-weights', 'bars', 'weights'], 1799, 2199, 'instock', null, 'Popular', '/Image/Bars%20&%20Weights.jpg', '/Image/Bars%20&%20Weights.jpg', '', '/Image/Bars%20&%20Weights.jpg', ARRAY[]::text[], 'Olympic bar and plate package for foundational lifting.', 'Built for heavy compound work, this Olympic package includes a balanced barbell and durable plate set suitable for racks, platforms, and club installations.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (7, 'Power Squat Rack Pro', 'strength', ARRAY['gym-equipment', 'strength', 'racks-benches', 'racks', 'power-rack'], 2999, 3699, 'instock', null, 'Trending', '/Image/power%20rack%202-01.jpg', '/Image/power%20rack%202-01.jpg', '', '/Image/power%20rack%202-01.jpg', ARRAY[]::text[], 'Heavy duty power rack for free weight training stations.', 'The Power Squat Rack Pro is built for commercial strength zones and serious garage gyms, with durable uprights, spotter arms, and multi-grip pull-up options.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (8, 'Adjustable Weight Bench', 'strength', ARRAY['gym-equipment', 'racks-benches', 'benches'], 849, 1099, 'instock', null, 'Popular', '/Image/Benches.jpg', '/Image/Benches.jpg', '', '/Image/Benches.jpg', ARRAY[]::text[], 'Multi-angle bench for presses, rows, and accessories.', 'A stable adjustable bench with incline and flat positions for free weight training, dumbbell work, and general strength sessions.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (9, 'Resistance Band Set', 'accessories', ARRAY['gym-equipment', 'accessories'], 149, 219, 'instock', null, 'Best Seller', '/Image/Gym%20Accessories.jpg', '/Image/Gym%20Accessories.jpg', '', '/Image/Gym%20Accessories.jpg', ARRAY[]::text[], 'Portable resistance set for warmups, rehab, and accessory work.', 'This resistance band set supports mobility work, rehabilitation, activation drills, and travel-friendly training for all levels.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (10, 'Whey Protein 5lb', 'supplements', ARRAY['supplements', 'protein'], 289, 369, 'instock', null, 'Best Seller', '/Image/Protein.jpg', '/Image/Protein.jpg', '', '/Image/Protein.jpg', ARRAY[]::text[], 'High-quality whey protein for recovery and lean muscle support.', 'A daily whey protein built for post-workout recovery, muscle maintenance, and easy shake preparation for active athletes and gym members.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (11, 'Rubber Gym Mat 1m²', 'flooring', ARRAY['flooring', 'gym-mats', 'rubber'], 89, 129, 'instock', null, 'Popular', '/Image/Gym%20Flooring.jpg', '/Image/Gym%20Flooring.jpg', '', '/Image/Gym%20Flooring.jpg', ARRAY[]::text[], 'Durable rubber tile for weight rooms and cardio areas.', 'This rubber flooring tile is designed to reduce impact, protect concrete surfaces, and improve grip in strength and functional training zones.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (12, 'Artificial Grass Flooring', 'flooring', ARRAY['flooring', 'gym-mats', 'grass'], 729, 929, 'instock', null, 'Popular', '/Image/Sports%20Flooring.jpg', '/Image/Sports%20Flooring.jpg', '', '/Image/Sports%20Flooring.jpg', ARRAY[]::text[], 'High-traffic turf strip for sled pushes and speed work.', 'Artificial grass flooring designed for functional lanes, sprint drills, and indoor training spaces that need durable traction and a clean finish.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (13, 'Mens Performance Tracksuit', 'sportswear', ARRAY['sportswear', 'mens', 'tracksuit'], 219, 299, 'instock', null, 'New', '/Image/Gents%20Sportswear.jpg', '/Image/Gents%20Sportswear.jpg', '', '/Image/Gents%20Sportswear.jpg', ARRAY[]::text[], 'Breathable tracksuit for travel, warmups, and teamwear.', 'A modern mens tracksuit cut for training travel, light warmups, and club apparel with breathable fabric and a clean athletic fit.', true, 5, 0, '[{"label":"Small","price":219,"stockStatus":"instock"},{"label":"Medium","price":219,"stockStatus":"instock"},{"label":"Large","price":219,"stockStatus":"instock"},{"label":"XL","price":219,"stockStatus":"outofstock"}]'::jsonb, '[]'::jsonb),
+  (14, 'Ladies Training Set', 'sportswear', ARRAY['sportswear', 'ladies', 'sports-set'], 189, 249, 'instock', null, 'Offer', '/Image/ladies%20sportswear.jpg', '/Image/ladies%20sportswear.jpg', '', '/Image/ladies%20sportswear.jpg', ARRAY[]::text[], 'Comfortable coordinated training set for gym and studio use.', 'The ladies training set pairs flexibility, moisture handling, and comfortable movement for classes, gym work, and active everyday wear.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (15, 'Kids Match Day Kit', 'sportswear', ARRAY['sportswear', 'kids', 'sports-set'], 139, 179, 'instock', null, 'Popular', '/Image/kids%20sportswear.jpg', '/Image/kids%20sportswear.jpg', '', '/Image/kids%20sportswear.jpg', ARRAY[]::text[], 'Lightweight match day set for school and academy teams.', 'A kids performance set designed for academy sessions, school competitions, and comfortable active movement throughout the week.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (16, 'Mens Running Shoes', 'footwear', ARRAY['footwear', 'mens', 'running'], 259, 339, 'instock', null, 'Sale', '/Image/Mens%20Shoe%20Qatar.jpg', '/Image/Mens%20Shoe%20Qatar.jpg', '', '/Image/Mens%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Cushioned running shoe for daily road and treadmill miles.', 'Mens Running Shoes combine cushioning and stable support for treadmill sessions, road work, and general active use.', true, 5, 0, '[{"price":259,"stockStatus":"instock","options":{"Size":"41","Color":"Black"}},{"price":259,"stockStatus":"instock","options":{"Size":"42","Color":"Black"}},{"price":269,"stockStatus":"instock","options":{"Size":"43","Color":"Red"}},{"price":269,"stockStatus":"outofstock","options":{"Size":"44","Color":"Red"}}]'::jsonb, '[]'::jsonb),
+  (17, 'Ladies Training Shoes', 'footwear', ARRAY['footwear', 'ladies', 'training'], 239, 319, 'instock', null, 'New', '/Image/Ladies%20Shoe%20Qatar.jpg', '/Image/Ladies%20Shoe%20Qatar.jpg', '', '/Image/Ladies%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Supportive cross-training shoes for gym and fitness classes.', 'A versatile training shoe for gym circuits, studio sessions, and daily active wear with a stable base and lightweight upper.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (18, 'Speed Training Ladder', 'sports-tools', ARRAY['sports-tools', 'training'], 79, 109, 'instock', null, 'Popular', '/Image/Training%20Tools%20Sports.jpeg', '/Image/Training%20Tools%20Sports.jpeg', '', '/Image/Training%20Tools%20Sports.jpeg', ARRAY[]::text[], 'Portable agility ladder for field sessions and conditioning.', 'A durable speed ladder built for coaches, teams, and functional trainers working on agility, footwork, and acceleration drills.', true, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (19, 'Stair Climber Pro', 'cardio', ARRAY['gym-equipment', 'cardio', 'stairs'], 5899, 6599, 'instock', null, 'Premium', '/Image/stairs.webp', '/Image/stairs.webp', '', '/Image/stairs.webp', ARRAY[]::text[], 'Commercial stair climber for high-intensity conditioning zones.', 'A performance stair machine designed for gyms that need a durable, space-efficient cardio option with serious calorie burn.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (20, 'Selectorized Chest Press', 'strength', ARRAY['gym-equipment', 'strength', 'selectorized'], 4899, 5599, 'instock', null, 'Trending', '/Image/selectorized.png', '/Image/selectorized.png', '', '/Image/selectorized.png', ARRAY[]::text[], 'Selectorized chest press for smooth guided upper body training.', 'A commercial chest press machine built for club floors that need easy setup, reliable mechanics, and broad member usability.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (21, 'Cable Motion Trainer', 'strength', ARRAY['gym-equipment', 'strength', 'cable-motion'], 5299, 6199, 'instock', null, 'Best Seller', '/Image/cable_motion.png', '/Image/cable_motion.png', '', '/Image/cable_motion.png', ARRAY[]::text[], 'Functional cable trainer for multiplanar strength work.', 'The Cable Motion Trainer supports accessory work, rehab, sport-specific movement, and general functional strength sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (22, 'Multi Station Gym', 'strength', ARRAY['gym-equipment', 'strength', 'multi-stations'], 7399, 8199, 'instock', null, 'Offer', '/Image/multi_station.webp', '/Image/multi_station.webp', '', '/Image/multi_station.webp', ARRAY[]::text[], 'Multi-user gym station for shared commercial environments.', 'Built for multipurpose rooms and clubs, this multi station gym packs several training points into one efficient commercial frame.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (23, 'Elite Boxing Gloves', 'boxing', ARRAY['gym-equipment', 'boxing', 'sports-tools', 'gloves'], 159, 199, 'instock', null, 'Popular', '/Image/Gloves.jpeg', '/Image/Gloves.jpeg', '', '/Image/Gloves.jpeg', ARRAY[]::text[], 'Shock-absorbing gloves for bag work and pad sessions.', 'Protective boxing gloves with padded support for boxing rooms, combat training, and high-volume technique sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (24, 'FIFA Match Football', 'sports-tools', ARRAY['sports-tools', 'football'], 119, 149, 'instock', null, 'Best Seller', '/Image/Football.jpg', '/Image/Football.jpg', '', '/Image/Football.jpg', ARRAY[]::text[], 'Match-quality football for clubs, schools, and academies.', 'A durable match football designed for structured training and competition use across clubs, schools, and community teams.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (25, 'Arena Grip Basketball', 'sports-tools', ARRAY['sports-tools', 'basketball'], 129, 159, 'instock', null, 'Popular', '/Image/Basketball.jpeg', '/Image/Basketball.jpeg', '', '/Image/Basketball.jpeg', ARRAY[]::text[], 'Indoor-outdoor basketball with durable grip texture.', 'Arena Grip Basketball balances surface feel and durability for school courts, club sessions, and recreational play.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (26, 'Competition Volleyball', 'sports-tools', ARRAY['sports-tools', 'volleyball'], 99, 129, 'instock', null, 'Offer', '/Image/Volleyball.jpeg', '/Image/Volleyball.jpeg', '', '/Image/Volleyball.jpeg', ARRAY[]::text[], 'Soft-touch volleyball for practice and competitive sessions.', 'A quality volleyball suitable for team training, school programs, and indoor recreational competition.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (27, 'Table Tennis Starter Set', 'sports-tools', ARRAY['sports-tools', 'indoor'], 149, 189, 'instock', null, 'New', '/Image/Table%20Tennis%20Indoor%20Sports.jpeg', '/Image/Table%20Tennis%20Indoor%20Sports.jpeg', '', '/Image/Table%20Tennis%20Indoor%20Sports.jpeg', ARRAY[]::text[], 'Indoor table tennis bundle with bats, balls, and net kit.', 'An easy starter package for schools, family recreation spaces, and indoor games rooms that need a reliable table tennis setup.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (28, 'Pro Tennis Racket', 'sports-tools', ARRAY['sports-tools', 'other', 'rackets'], 219, 279, 'instock', null, 'Premium', '/Image/Rackets.jpeg', '/Image/Rackets.jpeg', '', '/Image/Rackets.jpeg', ARRAY[]::text[], 'Balanced racket for tennis training and casual match play.', 'A versatile racket designed for players who need a controlled feel with enough power for regular training and recreational matches.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (29, 'Hydration Sports Bottle', 'sports-tools', ARRAY['sports-tools', 'sports-accessories', 'bottles'], 39, 49, 'instock', null, 'Popular', '/Image/Bottles.jpeg', '/Image/Bottles.jpeg', '', '/Image/Bottles.jpeg', ARRAY[]::text[], 'Reusable squeeze bottle for training sessions and teams.', 'A practical training bottle for school teams, group sessions, and individual athletes who need quick hydration access.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (30, 'Team Duffel Bag', 'sports-tools', ARRAY['sports-tools', 'sports-accessories', 'bags'], 89, 119, 'instock', null, 'Popular', '/Image/Bags.jpeg', '/Image/Bags.jpeg', '', '/Image/Bags.jpeg', ARRAY[]::text[], 'Large gear bag for team travel and daily training kits.', 'The Team Duffel Bag provides separated storage for kit, shoes, and accessories, making it a reliable option for players and coaches.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (31, 'Training Cap', 'sports-tools', ARRAY['sports-tools', 'sports-accessories', 'caps'], 49, 69, 'instock', null, 'Offer', '/Image/Caps.jpeg', '/Image/Caps.jpeg', '', '/Image/Caps.jpeg', ARRAY[]::text[], 'Lightweight sports cap for outdoor drills and daily wear.', 'A breathable performance cap suitable for field sessions, travel, and general outdoor activity in the Doha climate.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (32, 'Shin Guard Protector', 'sports-tools', ARRAY['sports-tools', 'sports-accessories', 'protector', 'football'], 59, 79, 'instock', null, 'Best Seller', '/Image/Protectors.jpeg', '/Image/Protectors.jpeg', '', '/Image/Protectors.jpeg', ARRAY[]::text[], 'Protective shin guards for academy and match play.', 'A secure and lightweight protector set for football training, match play, and youth development sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (33, 'Grip Performance Socks', 'sports-tools', ARRAY['sports-tools', 'sports-accessories', 'socks'], 29, 39, 'instock', null, 'Popular', '/Image/Socks.jpeg', '/Image/Socks.jpeg', '', '/Image/Socks.jpeg', ARRAY[]::text[], 'Performance socks for training, turf work, and match day.', 'Grip socks designed for controlled movement inside training shoes and boots during field and gym sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (34, 'Micronized Creatine', 'supplements', ARRAY['supplements', 'creatine'], 119, 149, 'instock', null, 'Best Seller', '/Image/Creatine.jpg', '/Image/Creatine.jpg', '', '/Image/Creatine.jpg', ARRAY[]::text[], 'Micronized creatine monohydrate for power and recovery.', 'A simple creatine supplement intended for athletes focused on strength output, repeat performance, and training consistency.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (35, 'Pre-Workout Blast', 'supplements', ARRAY['supplements', 'preworkout'], 139, 179, 'instock', null, 'Popular', '/Image/Preworkout.jpg', '/Image/Preworkout.jpg', '', '/Image/Preworkout.jpg', ARRAY[]::text[], 'Energy and focus formula for high-intensity sessions.', 'A pre-workout formula built for sessions that need focus, drive, and support for demanding lifting or conditioning blocks.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (36, 'Daily Multivitamin', 'supplements', ARRAY['supplements', 'vitamins'], 79, 99, 'instock', null, 'Offer', '/Image/Vitamins.jpg', '/Image/Vitamins.jpg', '', '/Image/Vitamins.jpg', ARRAY[]::text[], 'Daily multivitamin support for active lifestyles.', 'A straightforward daily vitamin option for general health support, recovery routines, and long training weeks.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (37, 'Mineral Recovery Complex', 'supplements', ARRAY['supplements', 'minerals'], 89, 109, 'instock', null, 'New', '/Image/Minerals.jpg', '/Image/Minerals.jpg', '', '/Image/Minerals.jpg', ARRAY[]::text[], 'Mineral support formula for hydration and recovery balance.', 'A mineral recovery supplement intended to support active athletes during periods of heavy sweating and repeated training.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (38, 'Thermo Burn Plus', 'supplements', ARRAY['supplements', 'fatburner'], 149, 189, 'instock', null, 'Popular', '/Image/Fat%20burner.jpg', '/Image/Fat%20burner.jpg', '', '/Image/Fat%20burner.jpg', ARRAY[]::text[], 'Fat burner formula for cutting phases and active routines.', 'A controlled thermogenic support product designed for users managing a structured fitness or weight-loss routine.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (39, 'Kids Training Shorts', 'sportswear', ARRAY['sportswear', 'kids', 'shorts'], 59, 79, 'instock', null, 'Offer', '/Image/Shorts.jpg', '/Image/Shorts.jpg', '', '/Image/Shorts.jpg', ARRAY[]::text[], 'Lightweight training shorts for school sports and clubs.', 'A simple, durable pair of shorts built for PE sessions, club training, and everyday sports activities.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (40, 'Mens Polo Training Shirt', 'sportswear', ARRAY['sportswear', 'mens', 'polo-shirt'], 79, 99, 'instock', null, 'Popular', '/Image/Polo%20tshirts.jpg', '/Image/Polo%20tshirts.jpg', '', '/Image/Polo%20tshirts.jpg', ARRAY[]::text[], 'Smart training polo for clubs, coaches, and team staff.', 'A performance polo that works for club uniforms, coach wear, and casual active settings with a cleaner profile than a tee.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (41, 'Ladies Performance Tee', 'sportswear', ARRAY['sportswear', 'ladies', 't-shirt'], 69, 89, 'instock', null, 'Best Seller', '/Image/Tshirts.jpg', '/Image/Tshirts.jpg', '', '/Image/Tshirts.jpg', ARRAY[]::text[], 'Soft performance tee for studio sessions and everyday fitness.', 'A lightweight ladies training tee with a comfortable cut for gym sessions, walks, classes, and layered sportswear setups.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (42, 'Kids Track Pants', 'sportswear', ARRAY['sportswear', 'kids', 'pants'], 69, 89, 'instock', null, 'New', '/Image/Pants.jpg', '/Image/Pants.jpg', '', '/Image/Pants.jpg', ARRAY[]::text[], 'Comfortable track pants for school and after-school training.', 'Kids track pants designed for movement, comfort, and easy team use during cooler training sessions and travel.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (43, 'Ladies Running Shoes', 'footwear', ARRAY['footwear', 'ladies', 'running'], 229, 289, 'instock', null, 'Popular', '/Image/Ladies%20Shoe%20Qatar.jpg', '/Image/Ladies%20Shoe%20Qatar.jpg', '', '/Image/Ladies%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Light cushioned runners for daily training and cardio work.', 'A smooth, light running shoe built for treadmill miles, walking, and general active use with dependable comfort.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (44, 'Kids Football Boots', 'footwear', ARRAY['footwear', 'kids', 'football'], 179, 219, 'instock', null, 'Best Seller', '/Image/Kids%20Shoe%20Qatar.jpg', '/Image/Kids%20Shoe%20Qatar.jpg', '', '/Image/Kids%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Junior football boots for training grounds and school matches.', 'Kids football boots designed for academy drills, match day traction, and developing players who need dependable support.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (45, 'Mens Court Shoes', 'footwear', ARRAY['footwear', 'mens', 'basketball'], 279, 349, 'instock', null, 'Premium', '/Image/Mens%20Shoe%20Qatar.jpg', '/Image/Mens%20Shoe%20Qatar.jpg', '', '/Image/Mens%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Court-focused shoe with ankle support and grip traction.', 'A supportive court shoe for indoor training, basketball movement, and high-change-direction sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (46, 'Futsal Speed Boots', 'footwear', ARRAY['footwear', 'mens', 'futsal'], 219, 269, 'instock', null, 'Offer', '/Image/Mens%20Shoe%20Qatar.jpg', '/Image/Mens%20Shoe%20Qatar.jpg', '', '/Image/Mens%20Shoe%20Qatar.jpg', ARRAY[]::text[], 'Indoor futsal boots for grip, control, and quick cuts.', 'Built for indoor surfaces and fast change of direction, these futsal boots support close control and responsive movement.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (47, 'Indoor Sports Tile', 'flooring', ARRAY['flooring', 'sports-flooring', 'indoor-flooring'], 119, 149, 'instock', null, 'Popular', '/Image/Sports%20Flooring.jpg', '/Image/Sports%20Flooring.jpg', '', '/Image/Sports%20Flooring.jpg', ARRAY[]::text[], 'Modular indoor sports tile for multipurpose activity areas.', 'A practical indoor flooring option for school halls, recreation spaces, and flexible sports environments.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (48, 'Outdoor Court Tile', 'flooring', ARRAY['flooring', 'sports-flooring', 'outdoor-flooring'], 139, 169, 'instock', null, 'Trending', '/Image/Sports%20Flooring.jpg', '/Image/Sports%20Flooring.jpg', '', '/Image/Sports%20Flooring.jpg', ARRAY[]::text[], 'Weather-ready outdoor sports tile for courts and play zones.', 'Outdoor court tile with drainage and durability features for school yards, community courts, and active outdoor surfaces.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (49, 'Vinyl Roll Mat', 'flooring', ARRAY['flooring', 'gym-mats', 'vinyl'], 99, 129, 'instock', null, 'New', '/Image/Gym%20Flooring.jpg', '/Image/Gym%20Flooring.jpg', '', '/Image/Gym%20Flooring.jpg', ARRAY[]::text[], 'Vinyl floor roll for fitness rooms and clean training spaces.', 'A cleanable flooring roll intended for light training zones, studio rooms, and fitness areas that need fast maintenance.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (50, 'Wood Court Panel', 'flooring', ARRAY['flooring', 'gym-mats', 'wood'], 169, 219, 'instock', null, 'Premium', '/Image/Sports%20Flooring.jpg', '/Image/Sports%20Flooring.jpg', '', '/Image/Sports%20Flooring.jpg', ARRAY[]::text[], 'Wood-style court panel for premium sports interiors.', 'A wood-look panel system intended for projects that need a cleaner premium court finish with durable performance.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (51, 'Commercial Barbell Rack', 'strength', ARRAY['gym-equipment', 'racks-benches', 'racks'], 999, 1299, 'instock', null, 'Popular', '/Image/Racks.jpg', '/Image/Racks.jpg', '', '/Image/Racks.jpg', ARRAY[]::text[], 'Storage rack for barbells and fixed lifting bars.', 'A practical storage rack that keeps bars organized, accessible, and protected in strength rooms with heavy daily traffic.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (52, 'Kettlebell Set', 'strength', ARRAY['gym-equipment', 'weights', 'accessories'], 899, 1099, 'instock', null, 'Best Seller', '/Image/Weights.jpg', '/Image/Weights.jpg', '', '/Image/Weights.jpg', ARRAY[]::text[], 'Mixed kettlebell set for functional circuits and strength work.', 'A kettlebell package for studios, PT rooms, and home training spaces that need versatile weighted movement options.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (53, 'Studio Yoga Mat', 'accessories', ARRAY['gym-equipment', 'accessories'], 79, 99, 'instock', null, 'Offer', '/Image/Gym%20Accessories.jpg', '/Image/Gym%20Accessories.jpg', '', '/Image/Gym%20Accessories.jpg', ARRAY[]::text[], 'Comfortable mat for floor work, mobility, and stretching.', 'A general-purpose studio mat suited for yoga, stretching, cooldown work, and low-impact floor exercise sessions.', false, 5, 0, '[]'::jsonb, '[]'::jsonb),
+  (54, 'Protein Isolate Gold', 'supplements', ARRAY['supplements', 'protein'], 329, 399, 'instock', null, 'Premium', '/Image/Protein.jpg', '/Image/Protein.jpg', '', '/Image/Protein.jpg', ARRAY[]::text[], 'Isolate protein blend for lean recovery and daily intake.', 'A fast-mixing isolate option for athletes who want a leaner protein profile while maintaining recovery support.', false, 5, 0, '[]'::jsonb, '[]'::jsonb)
+on conflict (id) do update set
+  name = excluded.name,
+  category = excluded.category,
+  categories = excluded.categories,
+  price = excluded.price,
+  old_price = excluded.old_price,
+  stock_status = excluded.stock_status,
+  stock_count = excluded.stock_count,
+  badge = excluded.badge,
+  img = excluded.img,
+  image = excluded.image,
+  img_hover = excluded.img_hover,
+  cover = excluded.cover,
+  gallery = excluded.gallery,
+  short_desc = excluded.short_desc,
+  description = excluded.description,
+  featured = excluded.featured,
+  rating = excluded.rating,
+  reviews = excluded.reviews,
+  variations = excluded.variations,
+  attributes = excluded.attributes;

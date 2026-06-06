@@ -1,39 +1,51 @@
-import { useEffect, useMemo, useState } from "react";
-import { getWishlistKey, getWishlistMap, saveWishlistMap } from "../lib/storefront";
+import { useEffect, useState } from "react";
+import { fetchWishlistIds, replaceWishlist, toggleWishlistId } from "../lib/storefrontApi";
 
-export function useWishlist(currentUser) {
-  const [wishlistMap, setWishlistMap] = useState(() => getWishlistMap());
+export function useWishlist(sessionUser) {
+  const [wishlist, setWishlist] = useState([]);
+  const userId = sessionUser?.id || null;
 
   useEffect(() => {
-    const refresh = () => setWishlistMap(getWishlistMap());
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, []);
+    let active = true;
 
-  const wishlistKey = useMemo(() => getWishlistKey(currentUser), [currentUser]);
-  const wishlist = wishlistMap[wishlistKey] || [];
+    const refresh = async () => {
+      if (!userId) {
+        if (active) {
+          setWishlist([]);
+        }
+        return;
+      }
 
-  const toggleWishlist = (id) => {
-    setWishlistMap((current) => {
-      const currentIds = current[wishlistKey] || [];
-      const nextIds = currentIds.includes(id)
-        ? currentIds.filter((item) => item !== id)
-        : [...currentIds, id];
-      const next = { ...current, [wishlistKey]: nextIds };
-      saveWishlistMap(next);
-      return next;
-    });
+      const nextWishlist = await fetchWishlistIds(userId);
+      if (active) {
+        setWishlist(nextWishlist);
+      }
+    };
+
+    refresh();
+    return () => {
+      active = false;
+    };
+  }, [userId]);
+
+  const toggleWishlist = async (id) => {
+    if (!userId) {
+      window.alert("Unable to save wishlist right now. Please refresh and try again.");
+      return;
+    }
+
+    const nextWishlist = await toggleWishlistId(userId, id);
+    setWishlist(nextWishlist);
   };
 
-  const removeWishlistItem = (id) => {
-    setWishlistMap((current) => {
-      const next = {
-        ...current,
-        [wishlistKey]: (current[wishlistKey] || []).filter((item) => String(item) !== String(id)),
-      };
-      saveWishlistMap(next);
-      return next;
-    });
+  const removeWishlistItem = async (id) => {
+    if (!userId) {
+      return;
+    }
+
+    const nextWishlist = wishlist.filter((item) => String(item) !== String(id));
+    await replaceWishlist(userId, nextWishlist);
+    setWishlist(nextWishlist);
   };
 
   return {

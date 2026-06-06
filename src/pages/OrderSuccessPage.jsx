@@ -1,22 +1,41 @@
-import { useEffect, useMemo } from "react";
-import { STORAGE_KEYS } from "../lib/storefront";
+import { useEffect, useMemo, useState } from "react";
+import { fetchOrderByOrderId } from "../lib/storefrontApi";
+
+function getOrderIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("order");
+}
 
 export function OrderSuccessPage() {
-  const order = useMemo(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEYS.latestOrder);
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
-    }
-  }, []);
+  const [order, setOrder] = useState(null);
+  const orderId = useMemo(() => getOrderIdFromUrl(), []);
 
   useEffect(() => {
     document.title = "Order Success - Sports Way";
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    const loadOrder = async () => {
+      if (!orderId) {
+        return;
+      }
+
+      const nextOrder = await fetchOrderByOrderId(orderId);
+      if (active) {
+        setOrder(nextOrder);
+      }
+    };
+
+    loadOrder();
+    return () => {
+      active = false;
+    };
+  }, [orderId]);
+
   const fallbackOrder = order || {
-    id: "SW-000000",
+    id: orderId || "SW-000000",
     created_at: new Date().toISOString(),
     payment_method: "Processed securely",
   };

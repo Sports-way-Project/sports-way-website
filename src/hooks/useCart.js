@@ -1,19 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildCartItem, getStoredJson, setStoredJson, STORAGE_KEYS } from "../lib/storefront";
+import { buildCartItem } from "../lib/storefront";
+import { clearCart, fetchCartItems, removeCartItem, replaceCart, upsertCartItem } from "../lib/storefrontApi";
 
-export function useCart() {
-  const [cart, setCart] = useState(() => getStoredJson(STORAGE_KEYS.cart, []));
+export function useCart(sessionUser) {
+  const [cart, setCartState] = useState([]);
   const [cartOpen, setCartOpen] = useState(false);
+  const userId = sessionUser?.id || null;
 
   useEffect(() => {
-    setStoredJson(STORAGE_KEYS.cart, cart);
-  }, [cart]);
+    let active = true;
 
-  useEffect(() => {
-    const refresh = () => setCart(getStoredJson(STORAGE_KEYS.cart, []));
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, []);
+    const refresh = async () => {
+      if (!userId) {
+        if (active) {
+          setCartState([]);
+        }
+        return;
+      }
+
+      const nextCart = await fetchCartItems(userId);
+      if (active) {
+        setCartState(nextCart);
+      }
+    };
+
+    refresh();
+    return () => {
+      active = false;
+    };
+  }, [userId]);
 
   const cartTotal = useMemo(
     () => cart.reduce((total, item) => total + item.price * item.qty, 0),
@@ -24,27 +39,55 @@ export function useCart() {
     [cart],
   );
 
-  const addToCart = (product, qty = 1, variation = null) => {
-    const nextItem = buildCartItem(product, qty, variation);
-    setCart((current) => {
-      const existing = current.find((item) => item.cartId === nextItem.cartId);
-      if (existing) {
-        return current.map((item) =>
-          item.cartId === nextItem.cartId ? { ...item, qty: item.qty + qty } : item,
-        );
-      }
+  const addToCart = async (product, qty = 1, variation = null) => {
+    if (!userId) {
+      window.alert("Unable to add to cart right now. Please refresh and try again.");
+      return;
+    }
 
-      return [...current, nextItem];
-    });
+    const nextItem = buildCartItem(product, qty, variation);
+    const existing = cart.find((item) => item.cartId === nextItem.cartId);
+    const mergedItem = existing ? { ...existing, qty: existing.qty + qty } : nextItem;
+    const nextCart = existing
+      ? cart.map((item) => item.cartId === nextItem.cartId ? mergedItem : item)
+      : [...cart, mergedItem];
+
+    setCartState(nextCart);
+    await upsertCartItem(userId, mergedItem);
     setCartOpen(true);
   };
 
-  const changeQty = (cartId, delta) => {
-    setCart((current) =>
-      current
-        .map((item) => (item.cartId === cartId ? { ...item, qty: item.qty + delta } : item))
-        .filter((item) => item.qty > 0),
-    );
+  const changeQty = async (cartId, delta) => {
+    const item = cart.find((entry) => entry.cartId === cartId);
+    if (!item || !userId) {
+      return;
+    }
+
+    const nextQty = item.qty + delta;
+    if (nextQty <= 0) {
+      setCartState((current) => current.filter((entry) => entry.cartId !== cartId));
+      await removeCartItem(userId, cartId);
+      return;
+    }
+
+    const nextItem = { ...item, qty: nextQty };
+    setCartState((current) => current.map((entry) => entry.cartId === cartId ? nextItem : entry));
+    await upsertCartItem(userId, nextItem);
+  };
+
+  const setCart = async (nextCart) => {
+    if (!userId) {
+      setCartState(Array.isArray(nextCart) ? nextCart : []);
+      return;
+    }
+
+    const normalized = Array.isArray(nextCart) ? nextCart : [];
+    setCartState(normalized);
+    if (normalized.length) {
+      await replaceCart(userId, normalized);
+    } else {
+      await clearCart(userId);
+    }
   };
 
   return {

@@ -1,31 +1,30 @@
 import { useEffect, useState } from "react";
-import { getMasterProducts, saveMasterProducts, STORAGE_KEYS } from "../lib/storefront";
+import { fetchProducts, upsertProducts } from "../lib/storefrontApi";
 
 export function useMasterProducts() {
-  const [products, setProducts] = useState(() => getMasterProducts());
+  const [products, setProductsState] = useState([]);
 
   useEffect(() => {
-    const refresh = () => setProducts(getMasterProducts());
-    refresh();
+    let active = true;
+    const refresh = async () => {
+      const nextProducts = await fetchProducts();
+      if (active) {
+        setProductsState(nextProducts);
+      }
+    };
 
-    window.addEventListener("storage", refresh);
-    window.addEventListener("focus", refresh);
+    refresh();
     return () => {
-      window.removeEventListener("storage", refresh);
-      window.removeEventListener("focus", refresh);
+      active = false;
     };
   }, []);
 
-  useEffect(() => {
-    const observer = () => setProducts(getMasterProducts());
-    window.addEventListener(STORAGE_KEYS.masterProducts, observer);
-    return () => window.removeEventListener(STORAGE_KEYS.masterProducts, observer);
-  }, []);
-
-  const updateProducts = (nextProducts) => {
-    setProducts(nextProducts);
-    saveMasterProducts(nextProducts);
+  const setProducts = async (nextProducts) => {
+    setProductsState(nextProducts);
+    const syncedProducts = await upsertProducts(nextProducts);
+    setProductsState(syncedProducts);
+    return syncedProducts;
   };
 
-  return { products, setProducts: updateProducts };
+  return { products, setProducts };
 }

@@ -1,38 +1,55 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatPrice } from "../lib/format";
-import { getOrders, getUsers, getWishlistMap, saveUsers } from "../lib/storefront";
+import { fetchOrdersForUser } from "../lib/storefrontApi";
 
-export function AccountPage({ currentUser, products, removeWishlistItem, setCurrentUser }) {
+export function AccountPage({
+  cart = [],
+  currentUser,
+  products,
+  removeWishlistItem,
+  requestPasswordReset,
+  saveProfile,
+  signIn,
+  signOut,
+  signUp,
+  wishlist = [],
+}) {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [messages, setMessages] = useState({});
-  const [login, setLogin] = useState({ identity: "", password: "", remember: true });
+  const [login, setLogin] = useState({ identity: "", password: "" });
   const [register, setRegister] = useState({ name: "", phone: "", email: "", password: "" });
-  const [recovery, setRecovery] = useState({ open: false, email: "", code: "", generated: "", password: "" });
+  const [recovery, setRecovery] = useState({ open: false, email: "" });
   const [profile, setProfile] = useState({ billingAddress: "", shippingAddress: "", name: "", email: "", phone: "", password: "" });
+  const [orders, setOrders] = useState([]);
 
-  const orders = useMemo(() => {
-    if (!currentUser) {
-      return [];
-    }
-
-    return getOrders()
-      .filter((order) => String(order.email || "").toLowerCase() === String(currentUser.email || "").toLowerCase())
-      .sort((left, right) => new Date(right.created_at) - new Date(left.created_at));
-  }, [currentUser]);
-
-  const wishlistProducts = useMemo(() => {
-    if (!currentUser) {
-      return [];
-    }
-
-    const wishlistMap = getWishlistMap();
-    const ids = wishlistMap[String(currentUser.email || "").toLowerCase()] || [];
-    return ids.map((id) => products.find((product) => String(product.id) === String(id))).filter(Boolean);
-  }, [currentUser, products]);
+  const wishlistProducts = useMemo(
+    () => wishlist.map((id) => products.find((product) => String(product.id) === String(id))).filter(Boolean),
+    [products, wishlist],
+  );
 
   useEffect(() => {
     document.title = "My Account - Sports Way Trading";
   }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setOrders([]);
+      return;
+    }
+
+    let active = true;
+    const loadOrders = async () => {
+      const nextOrders = await fetchOrdersForUser(currentUser.id);
+      if (active) {
+        setOrders(nextOrders);
+      }
+    };
+
+    loadOrders();
+    return () => {
+      active = false;
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -53,102 +70,85 @@ export function AccountPage({ currentUser, products, removeWishlistItem, setCurr
     setMessages((current) => ({ ...current, [key]: { text, type } }));
   };
 
-  const handleLogin = (event) => {
+  const handleLogin = async (event) => {
     event.preventDefault();
-    const user = getUsers().find((item) => {
-      const identity = login.identity.trim().toLowerCase();
-      return String(item.email || "").toLowerCase() === identity || String(item.name || "").toLowerCase() === identity;
-    });
-
-    if (!user || user.password !== login.password) {
-      setMessage("login", "Incorrect username/email or password.", "error");
-      return;
+    try {
+      await signIn({
+        email: login.identity.trim(),
+        password: login.password,
+        guestCart: cart,
+        guestWishlist: wishlist,
+      });
+      setMessage("login", "");
+    } catch (error) {
+      setMessage("login", error.message || "Incorrect email or password.", "error");
     }
-
-    setCurrentUser(user, login.remember);
-    setMessage("login", "");
   };
 
-  const handleRegister = (event) => {
+  const handleRegister = async (event) => {
     event.preventDefault();
-    const users = getUsers();
-    if (users.some((item) => String(item.email || "").toLowerCase() === register.email.toLowerCase())) {
-      setMessage("register", "An account with this email already exists.", "error");
-      return;
+    try {
+      await signUp({
+        email: register.email.trim(),
+        password: register.password,
+        name: register.name.trim(),
+        phone: register.phone.trim(),
+        guestCart: cart,
+        guestWishlist: wishlist,
+      });
+      setMessage("register", "Account created successfully.", "success");
+    } catch (error) {
+      setMessage("register", error.message || "Unable to create the account.", "error");
     }
-
-    const user = {
-      id: `U${Date.now()}`,
-      name: register.name,
-      phone: register.phone,
-      email: register.email,
-      password: register.password,
-      billing_address: "",
-      shipping_address: "",
-      created_at: new Date().toISOString(),
-    };
-
-    saveUsers([...users, user]);
-    setCurrentUser(user, true);
-    setMessage("register", "Account created successfully.", "success");
   };
 
-  const saveAddresses = (event) => {
+  const saveAddresses = async (event) => {
     event.preventDefault();
-    const nextUser = {
-      ...currentUser,
-      billing_address: profile.billingAddress,
-      shipping_address: profile.shippingAddress,
-    };
-    saveUsers(getUsers().map((item) => item.id === nextUser.id ? nextUser : item));
-    setCurrentUser(nextUser, true);
-    setMessage("addresses", "Addresses updated successfully.", "success");
+    try {
+      await saveProfile({
+        profilePatch: {
+          billing_address: profile.billingAddress,
+          shipping_address: profile.shippingAddress,
+        },
+      });
+      setMessage("addresses", "Addresses updated successfully.", "success");
+    } catch (error) {
+      setMessage("addresses", error.message || "Unable to save addresses.", "error");
+    }
   };
 
-  const saveDetails = (event) => {
+  const saveDetails = async (event) => {
     event.preventDefault();
-    const users = getUsers();
-    if (users.some((item) => String(item.email || "").toLowerCase() === profile.email.toLowerCase() && item.id !== currentUser.id)) {
-      setMessage("details", "This email address is already used by another account.", "error");
-      return;
+    try {
+      await saveProfile({
+        profilePatch: {
+          name: profile.name,
+          email: profile.email,
+          phone: profile.phone,
+        },
+        authPatch: {
+          email: profile.email,
+          password: profile.password || undefined,
+          data: {
+            name: profile.name,
+            phone: profile.phone,
+          },
+        },
+      });
+      setProfile((current) => ({ ...current, password: "" }));
+      setMessage("details", "Account details saved successfully.", "success");
+    } catch (error) {
+      setMessage("details", error.message || "Unable to save account details.", "error");
     }
-
-    const nextUser = {
-      ...currentUser,
-      name: profile.name,
-      email: profile.email,
-      phone: profile.phone,
-      password: profile.password || currentUser.password,
-    };
-    saveUsers(users.map((item) => item.id === nextUser.id ? nextUser : item));
-    setCurrentUser(nextUser, true);
-    setMessage("details", "Account details saved successfully.", "success");
   };
 
-  const sendRecoveryCode = () => {
-    const user = getUsers().find((item) => String(item.email || "").toLowerCase() === recovery.email.toLowerCase());
-    if (!user) {
-      setMessage("recovery", "This email address is not registered.", "error");
-      return;
+  const sendRecoveryEmail = async () => {
+    try {
+      await requestPasswordReset(recovery.email.trim());
+      setMessage("recovery", "Password reset email sent. Check your inbox.", "success");
+    } catch (error) {
+      setMessage("recovery", error.message || "Unable to send the reset email.", "error");
     }
-
-    setRecovery((current) => ({ ...current, generated: `SW-RESET-${Math.floor(10 + Math.random() * 90)}` }));
-    setMessage("recovery", "");
-  };
-
-  const applyRecovery = () => {
-    if (recovery.code !== recovery.generated) {
-      setMessage("recovery", "Invalid verification key.", "error");
-      return;
-    }
-
-    saveUsers(getUsers().map((item) => (
-      String(item.email || "").toLowerCase() === recovery.email.toLowerCase()
-        ? { ...item, password: recovery.password }
-        : item
-    )));
-    setRecovery({ open: false, email: "", code: "", generated: "", password: "" });
-    setMessage("login", "Password reset successful. Please log in.", "success");
   };
 
   return (
@@ -163,8 +163,8 @@ export function AccountPage({ currentUser, products, removeWishlistItem, setCurr
                 <h3 style={{ fontFamily: "Outfit, sans-serif", marginBottom: 16 }}>Login</h3>
                 <form className="account-form" onSubmit={handleLogin}>
                   <div className="account-field">
-                    <label>Username or email address</label>
-                    <input value={login.identity} onChange={(event) => setLogin((current) => ({ ...current, identity: event.target.value }))} required />
+                    <label>Email address</label>
+                    <input type="email" value={login.identity} onChange={(event) => setLogin((current) => ({ ...current, identity: event.target.value }))} required />
                   </div>
                   <div className="account-field">
                     <label>Password</label>
@@ -172,11 +172,7 @@ export function AccountPage({ currentUser, products, removeWishlistItem, setCurr
                   </div>
                   <div className="account-actions">
                     <button className="btn btn-primary" type="submit">Log In</button>
-                    <label className="remember-inline">
-                      <input type="checkbox" checked={login.remember} onChange={(event) => setLogin((current) => ({ ...current, remember: event.target.checked }))} />
-                      Remember me
-                    </label>
-                    <button type="button" className="link-button" onClick={() => setRecovery((current) => ({ ...current, open: true }))}>Lost your password?</button>
+                    <button type="button" className="link-button" onClick={() => setRecovery({ open: true, email: login.identity })}>Lost your password?</button>
                   </div>
                   <div className={`account-msg ${messages.login?.type || ""}`}>{messages.login?.text || ""}</div>
                 </form>
@@ -217,7 +213,7 @@ export function AccountPage({ currentUser, products, removeWishlistItem, setCurr
                   {tab === "details" ? "Account details" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </button>
               ))}
-              <button onClick={() => setCurrentUser(null)}>Logout</button>
+              <button onClick={() => signOut()}>Logout</button>
             </aside>
             <main className="account-content">
               {activeTab === "dashboard" ? (
@@ -315,30 +311,15 @@ export function AccountPage({ currentUser, products, removeWishlistItem, setCurr
       {recovery.open ? (
         <div className="account-modal">
           <div className="account-modal-card">
-            <button className="account-modal-close" onClick={() => setRecovery({ open: false, email: "", code: "", generated: "", password: "" })}>x</button>
-            <h3>Lost Password Recovery</h3>
-            <p>Enter your registered email address to reset your password.</p>
+            <button className="account-modal-close" onClick={() => setRecovery({ open: false, email: "" })}>x</button>
+            <h3>Password Reset</h3>
+            <p>Enter your registered email address and Supabase will send the reset link.</p>
             <div className="account-form">
               <div className="account-field">
                 <label>Registered Email address</label>
                 <input type="email" value={recovery.email} onChange={(event) => setRecovery((current) => ({ ...current, email: event.target.value }))} />
               </div>
-              {!recovery.generated ? (
-                <button className="btn btn-primary" onClick={sendRecoveryCode}>Send Reset Code</button>
-              ) : (
-                <>
-                  <p className="recovery-code-preview">Demo Verification Key: <strong>{recovery.generated}</strong></p>
-                  <div className="account-field">
-                    <label>Enter Demo Verification Key</label>
-                    <input value={recovery.code} onChange={(event) => setRecovery((current) => ({ ...current, code: event.target.value }))} />
-                  </div>
-                  <div className="account-field">
-                    <label>Choose New Password</label>
-                    <input type="password" value={recovery.password} onChange={(event) => setRecovery((current) => ({ ...current, password: event.target.value }))} />
-                  </div>
-                  <button className="btn btn-primary" onClick={applyRecovery}>Reset Password</button>
-                </>
-              )}
+              <button className="btn btn-primary" type="button" onClick={sendRecoveryEmail}>Send Reset Email</button>
               <div className={`account-msg ${messages.recovery?.type || ""}`}>{messages.recovery?.text || ""}</div>
             </div>
           </div>

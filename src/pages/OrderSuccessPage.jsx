@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { SEO } from "../components/SEO";
 import { fetchOrderByOrderId } from "../lib/storefrontApi";
 
 function getOrderIdFromUrl() {
@@ -7,8 +9,9 @@ function getOrderIdFromUrl() {
 }
 
 export function OrderSuccessPage() {
+  const [searchParams] = useSearchParams();
   const [order, setOrder] = useState(null);
-  const orderId = useMemo(() => getOrderIdFromUrl(), []);
+  const orderId = useMemo(() => searchParams.get("order"), [searchParams]);
 
   useEffect(() => {
     document.title = "Order Success - Sports Way";
@@ -42,6 +45,7 @@ export function OrderSuccessPage() {
 
   return (
     <div className="success-page">
+      <SEO title="Order Confirmed | Sports Way" description="Your Sports Way order has been received and is being processed." url="https://www.sports-way.com/order-success" />
       <div className="container">
         <div className="success-icon">OK</div>
         <h1 className="success-title">Thank you for your order!</h1>
@@ -62,7 +66,7 @@ export function OrderSuccessPage() {
           </div>
         </div>
 
-        <a href="index.html" className="btn btn-primary" style={{ padding: "16px 40px", fontSize: 16 }}>Continue Shopping</a>
+        <Link to="/" className="btn btn-primary" style={{ padding: "16px 40px", fontSize: 16 }}>Continue Shopping</Link>
       </div>
     </div>
   );

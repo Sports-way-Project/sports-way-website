@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { CartIcon, SearchIcon, UserIcon } from "./Icons";
 
 export function NavBar({
@@ -20,7 +21,7 @@ export function NavBar({
   return (
     <nav className={`navbar ${scrolled ? "scrolled" : ""}`} id="home">
       <div className="nav-container">
-        <a href="index.html" className="logo">
+        <a href="/" className="logo">
           <img src="/logo.png" alt="Sports Way Trading" className="nav-logo-img" />
         </a>
 
@@ -64,7 +65,7 @@ export function NavBar({
             </li>
           ))}
           <li>
-            <a href="wholesale.html" className="nav-wholesale-btn">
+            <a href="/wholesale" className="nav-wholesale-btn">
               Wholesale
             </a>
           </li>
@@ -74,7 +75,7 @@ export function NavBar({
           <button className="nav-search-btn" aria-label="Search" onClick={() => setSearchOpen((value) => !value)}>
             <SearchIcon />
           </button>
-          <a className="nav-search-btn" aria-label="My account" title="My account" href="my-account.html">
+          <a className="nav-search-btn" aria-label="My account" title="My account" href="/my-account">
             <UserIcon />
           </a>
           <button className="cart-btn" aria-label="Cart" onClick={() => setCartOpen(true)}>
@@ -108,7 +109,7 @@ export function NavBar({
         </div>
         <div className={`search-suggestions ${searchSuggestions.length ? "open" : ""}`}>
           {searchSuggestions.map((item) => (
-            <a key={`${item.type}-${item.label}`} href={item.href} className="search-suggestion-item">
+            <Link key={`${item.type}-${item.label}`} to={item.href} className="search-suggestion-item" onClick={() => { setSearchOpen(false); setSearchQuery(""); }}>
               {item.image ? (
                 <div className="search-suggestion-img">
                   <img src={item.image} alt={item.label} loading="lazy" />
@@ -124,10 +125,11 @@ export function NavBar({
                   <span className="search-suggestion-cat">{item.sublabel}</span>
                 </div>
               </div>
-            </a>
+            </Link>
           ))}
         </div>
       </div>
     </nav>
   );
 }
+

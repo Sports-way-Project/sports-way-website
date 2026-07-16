@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
-const DEFAULT_SUPABASE_URL = "https://punmneggsgjohiaqjeki.supabase.co";
-const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_KITvs_SidyVS_yinTahmrQ_MhZi3IJX";
+const DEFAULT_SUPABASE_URL = "https://lxmqhiookungmzpdqktm.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_FLGmaS2lziTFdjtKa-N9cg_DQrjFtn_";
 const DEFAULT_STORAGE_BUCKET = "product-images";
 
 function readWindowValue(key, fallback) {

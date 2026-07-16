@@ -13,6 +13,7 @@ export function useAccount() {
   const [authReady, setAuthReady] = useState(false);
   const [sessionUser, setSessionUser] = useState(null);
   const [currentUser, setCurrentUserState] = useState(null);
+  const [isRecovery, setIsRecovery] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -44,7 +45,10 @@ export function useAccount() {
       }
     };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setIsRecovery(true);
+      }
       Promise.resolve(syncSession(session)).finally(() => {
         if (active) {
           setAuthReady(true);
@@ -82,10 +86,10 @@ export function useAccount() {
 
     const profile = await ensureProfile(data.user);
     await promoteGuestState(data.user.id, guestCart, guestWishlist);
-    const nextProfile = await fetchProfileById(data.user.id);
+
     setSessionUser(data.user);
-    setCurrentUserState(nextProfile || profile);
-    return nextProfile || profile;
+    setCurrentUserState(profile);
+    return profile;
   };
 
   const signUp = async ({
@@ -93,6 +97,8 @@ export function useAccount() {
     password,
     name,
     phone,
+    terms_accepted = false,
+    marketing_opt_in = false,
     billing_address = "",
     shipping_address = "",
     guestCart = [],
@@ -102,7 +108,7 @@ export function useAccount() {
       email,
       password,
       options: {
-        data: { name, phone },
+        data: { name, phone, terms_accepted, marketing_opt_in },
       },
     });
 
@@ -111,12 +117,16 @@ export function useAccount() {
     }
 
     if (!data.session) {
-      throw new Error("Supabase email confirmation is enabled. Disable it or confirm the email before logging in.");
+      // Email confirmation is enabled in Supabase — return a friendly signal
+      // so the UI can show "check your inbox" instead of a crash.
+      return { needsConfirmation: true };
     }
 
     const profile = await ensureProfile(data.user, {
       name,
       phone,
+      terms_accepted,
+      marketing_opt_in,
       billing_address,
       shipping_address,
     });
@@ -139,7 +149,7 @@ export function useAccount() {
 
   const requestPasswordReset = async (email) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/my-account.html`,
+      redirectTo: `${window.location.origin}/my-account`,
     });
     if (error) {
       throw error;
@@ -156,6 +166,8 @@ export function useAccount() {
     return nextProfile;
   };
 
+  const clearRecovery = () => setIsRecovery(false);
+
   return {
     authReady,
     currentUser,
@@ -165,5 +177,7 @@ export function useAccount() {
     signOut,
     signUp,
     requestPasswordReset,
+    isRecovery,
+    clearRecovery,
   };
 }

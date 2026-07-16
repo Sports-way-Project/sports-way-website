@@ -1,6 +1,19 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
 import { formatPrice } from "../lib/format";
 
 export function CartSidebar({ cart, cartOpen, cartTotal, changeQty, setCartOpen }) {
+  const [pendingIds, setPendingIds] = useState(() => new Set());
+
+  async function handleChangeQty(cartId, delta) {
+    setPendingIds((prev) => new Set(prev).add(cartId));
+    try {
+      await changeQty(cartId, delta);
+    } finally {
+      setPendingIds((prev) => { const next = new Set(prev); next.delete(cartId); return next; });
+    }
+  }
+
   return (
     <>
       <div className={`cart-overlay ${cartOpen ? "open" : ""}`} onClick={() => setCartOpen(false)} />
@@ -15,8 +28,11 @@ export function CartSidebar({ cart, cartOpen, cartTotal, changeQty, setCartOpen 
           {cart.length === 0 ? (
             <p className="cart-empty">Your cart is empty.</p>
           ) : (
-            cart.map((item) => (
-              <div key={item.cartId || item.id} className="cart-item">
+            cart.map((item) => {
+              const cartId = item.cartId || item.id;
+              const isPending = pendingIds.has(cartId);
+              return (
+              <div key={cartId} className="cart-item" style={{ opacity: isPending ? 0.6 : 1, transition: "opacity 0.15s" }}>
                 <div className="cart-item-icon">
                   <img src={item.image || item.img} alt={item.name} />
                 </div>
@@ -24,16 +40,17 @@ export function CartSidebar({ cart, cartOpen, cartTotal, changeQty, setCartOpen 
                   <div className="cart-item-name">{item.name}</div>
                   <div className="cart-item-price">{formatPrice(item.price)}</div>
                   <div className="cart-qty">
-                    <button onClick={() => changeQty(item.cartId || item.id, -1)}>-</button>
+                    <button disabled={isPending} onClick={() => handleChangeQty(cartId, -1)}>-</button>
                     <span>{item.qty}</span>
-                    <button onClick={() => changeQty(item.cartId || item.id, 1)}>+</button>
+                    <button disabled={isPending} onClick={() => handleChangeQty(cartId, 1)}>+</button>
                   </div>
                 </div>
-                <button className="cart-item-remove" onClick={() => changeQty(item.cartId || item.id, -item.qty)}>
+                <button className="cart-item-remove" disabled={isPending} onClick={() => handleChangeQty(cartId, -item.qty)}>
                   x
                 </button>
               </div>
-            ))
+              );
+            })
           )}
         </div>
         {cart.length ? (
@@ -41,7 +58,7 @@ export function CartSidebar({ cart, cartOpen, cartTotal, changeQty, setCartOpen 
             <div className="cart-total">
               Total: <strong>{formatPrice(cartTotal)}</strong>
             </div>
-            <a className="btn btn-primary checkout-btn" href="checkout.html">Checkout</a>
+            <Link className="btn btn-primary checkout-btn" to="/checkout" onClick={() => setCartOpen(false)}>Checkout</Link>
           </div>
         ) : null}
       </aside>

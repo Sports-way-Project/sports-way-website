@@ -6,6 +6,12 @@ const SETTINGS_KEYS = {
   hiddenCategories: "hidden_categories",
   hiddenSubcategories: "hidden_subcategories",
   savedAttributes: "saved_attributes",
+  brands: "product_brands",
+  customCategories: "custom_categories",
+  showBrandsFilter: "show_brands_filter",
+  clients: "site_clients",
+  partners: "site_partners",
+  blogs: "site_blogs",
 };
 
 export const DEFAULT_COUPONS = [
@@ -19,6 +25,16 @@ function unwrap(response) {
     throw response.error;
   }
   return response.data;
+}
+
+function isMissingProfilesTableError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("public.profiles") && (message.includes("could not find the table") || message.includes("schema cache"));
+}
+
+function isMissingProfileColumnError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("profiles") && message.includes("column");
 }
 
 function unique(values) {
@@ -36,6 +52,7 @@ function mapProductFromRow(row) {
   return {
     id: row.id,
     name: row.name,
+    slug: row.slug || null,
     category: row.category,
     categories: coerceArray(row.categories),
     price: Number(row.price || 0),
@@ -55,6 +72,9 @@ function mapProductFromRow(row) {
     reviews: Number(row.reviews || 0),
     variations: Array.isArray(row.variations) ? row.variations : [],
     attributes: Array.isArray(row.attributes) ? row.attributes : [],
+    brand: row.brand || "",
+    dolibarr_ref: row.dolibarr_ref || null,
+    dolibarr_id: row.dolibarr_id == null ? null : Number(row.dolibarr_id),
   };
 }
 
@@ -79,8 +99,11 @@ function mapProductToRow(product) {
     featured: Boolean(product.featured),
     rating: Number(product.rating || 0),
     reviews: Number(product.reviews || 0),
+    brand: product.brand || "",
     variations: Array.isArray(product.variations) ? product.variations : [],
     attributes: Array.isArray(product.attributes) ? product.attributes : [],
+    dolibarr_ref: product.dolibarr_ref || null,
+    dolibarr_id: product.dolibarr_id == null ? null : Number(product.dolibarr_id),
   };
 }
 
@@ -97,9 +120,15 @@ function mapProfile(row) {
     billing_address: row.billing_address || "",
     shipping_address: row.shipping_address || "",
     role: row.role || "customer",
+    terms_accepted: Boolean(row.terms_accepted),
+    marketing_opt_in: Boolean(row.marketing_opt_in),
     created_at: row.created_at || null,
     last_login: row.last_login || null,
   };
+}
+
+function sanitizeProfilePayload(payload) {
+  return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
 }
 
 function mapCartRow(row) {
@@ -170,6 +199,7 @@ function mapOrderFromRow(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     customer_name: row.customer_name || "",
+    company: row.company || "",
     email: row.email || "",
     phone: row.phone || "",
     user_id: row.user_id || null,
@@ -179,9 +209,14 @@ function mapOrderFromRow(row) {
     discount: Number(row.discount || 0),
     coupon_code: row.coupon_code || null,
     payment_method: row.payment_method || "",
+    payment_reference: row.payment_reference || "",
     status: row.status || "Processing",
     notes: row.notes || "",
+    address: row.address || "",
+    billing_details: row.billing_details || null,
     items: Array.isArray(row.items) ? row.items : [],
+    dolibarr_order_id: row.dolibarr_order_id || null,
+    dolibarr_invoice_id: row.dolibarr_invoice_id || null,
   };
 }
 
@@ -204,8 +239,15 @@ export async function fetchProfileById(id) {
     return null;
   }
 
-  const data = unwrap(await supabase.from("profiles").select("*").eq("id", id).maybeSingle());
-  return mapProfile(data);
+  try {
+    const data = unwrap(await supabase.from("profiles").select("*").eq("id", id).maybeSingle());
+    return mapProfile(data);
+  } catch (error) {
+    if (isMissingProfilesTableError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function ensureProfile(authUser, patch = {}) {
@@ -214,7 +256,7 @@ export async function ensureProfile(authUser, patch = {}) {
   }
 
   const existing = await fetchProfileById(authUser.id);
-  const payload = {
+  const payload = sanitizeProfilePayload({
     id: authUser.id,
     email: patch.email || authUser.email || existing?.email || "",
     name: patch.name || authUser.user_metadata?.name || existing?.name || "",
@@ -222,15 +264,31 @@ export async function ensureProfile(authUser, patch = {}) {
     billing_address: patch.billing_address ?? existing?.billing_address ?? "",
     shipping_address: patch.shipping_address ?? existing?.shipping_address ?? "",
     role: patch.role || existing?.role || "customer",
+    terms_accepted: patch.terms_accepted ?? existing?.terms_accepted ?? Boolean(authUser.user_metadata?.terms_accepted),
+    marketing_opt_in: patch.marketing_opt_in ?? existing?.marketing_opt_in ?? Boolean(authUser.user_metadata?.marketing_opt_in),
     last_login: new Date().toISOString(),
-  };
+  });
 
   if (!existing) {
     payload.created_at = new Date().toISOString();
   }
 
-  unwrap(await supabase.from("profiles").upsert(payload, { onConflict: "id" }));
-  return fetchProfileById(authUser.id);
+  try {
+    unwrap(await supabase.from("profiles").upsert(payload, { onConflict: "id" }));
+    return fetchProfileById(authUser.id);
+  } catch (error) {
+    if (isMissingProfileColumnError(error)) {
+      const fallbackPayload = { ...payload };
+      delete fallbackPayload.terms_accepted;
+      delete fallbackPayload.marketing_opt_in;
+      unwrap(await supabase.from("profiles").upsert(fallbackPayload, { onConflict: "id" }));
+      return fetchProfileById(authUser.id) || mapProfile(payload);
+    }
+    if (isMissingProfilesTableError(error)) {
+      return mapProfile(payload);
+    }
+    throw error;
+  }
 }
 
 export async function updateProfile(profileId, patch, authPatch = null) {
@@ -241,13 +299,72 @@ export async function updateProfile(profileId, patch, authPatch = null) {
     }
   }
 
-  unwrap(await supabase.from("profiles").update(patch).eq("id", profileId));
-  return fetchProfileById(profileId);
+  try {
+    unwrap(await supabase.from("profiles").update(patch).eq("id", profileId));
+    return fetchProfileById(profileId);
+  } catch (error) {
+    if (isMissingProfileColumnError(error)) {
+      const fallbackPatch = { ...patch };
+      delete fallbackPatch.terms_accepted;
+      delete fallbackPatch.marketing_opt_in;
+      unwrap(await supabase.from("profiles").update(fallbackPatch).eq("id", profileId));
+      return fetchProfileById(profileId);
+    }
+    if (isMissingProfilesTableError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function listProfiles() {
-  const rows = unwrap(await supabase.from("profiles").select("*").order("created_at", { ascending: false }));
-  return rows.map(mapProfile);
+  try {
+    const rows = unwrap(await supabase.from("profiles").select("*").order("created_at", { ascending: false }));
+    return rows.map(mapProfile);
+  } catch (error) {
+    if (isMissingProfilesTableError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function generateAndUploadSitemap(products) {
+  const baseUrl = "https://www.sports-way.com";
+  const staticRoutes = [
+    "",
+    "/about",
+    "/blog",
+    "/contact",
+    "/wholesale",
+    "/categories/gym-equipment",
+    "/categories/sports-tools",
+    "/categories/sportswear",
+    "/categories/footwear",
+    "/categories/supplements",
+    "/categories/flooring",
+  ];
+
+  const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${staticRoutes.map((route) => `  <url>
+    <loc>${baseUrl}${route}</loc>
+    <changefreq>daily</changefreq>
+    <priority>${route === "" ? "1.0" : "0.8"}</priority>
+  </url>`).join("\n")}
+${products.map((product) => `  <url>
+    <loc>${baseUrl}/products/${product.slug || product.id}</loc>
+    <lastmod>${new Date().toISOString()}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>`).join("\n")}
+</urlset>`;
+
+  const blob = new Blob([sitemap], { type: "application/xml" });
+  await supabase.storage.from(SUPABASE_STORAGE_BUCKET).upload("sitemap.xml", blob, {
+    contentType: "application/xml",
+    upsert: true,
+  });
 }
 
 export async function fetchProducts() {
@@ -257,8 +374,27 @@ export async function fetchProducts() {
 
 export async function upsertProducts(products) {
   const payload = products.map(mapProductToRow);
-  unwrap(await supabase.from("products").upsert(payload, { onConflict: "id" }));
-  return fetchProducts();
+  const response = await supabase.from("products").upsert(payload, { onConflict: "id" }).select("id");
+  
+  if (response.error) {
+    throw new Error(response.error.message || JSON.stringify(response.error));
+  }
+  
+  // If RLS silently blocks the update (0 rows affected), data will be empty or missing rows
+  if (!response.data || response.data.length < payload.length) {
+    throw new Error("Update blocked by Database Security (RLS). You are not logged in as an authenticated admin!");
+  }
+
+  const nextProducts = await fetchProducts();
+  
+  // Auto-generate and upload sitemap when products change
+  try {
+    await generateAndUploadSitemap(nextProducts);
+  } catch (e) {
+    console.error("Failed to generate sitemap", e);
+  }
+  
+  return nextProducts;
 }
 
 export async function fetchSetting(key, fallback) {
@@ -267,19 +403,32 @@ export async function fetchSetting(key, fallback) {
 }
 
 export async function saveSetting(key, value) {
-  unwrap(await supabase.from("site_settings").upsert({ key, value }, { onConflict: "key" }));
+  const response = await supabase.from("site_settings").upsert({ key, value }, { onConflict: "key" }).select("key");
+  
+  if (response.error) {
+    throw new Error(response.error.message || JSON.stringify(response.error));
+  }
+  
+  if (!response.data || response.data.length === 0) {
+    throw new Error("Setting save blocked by Database Security (RLS). You are not logged in as an authenticated admin!");
+  }
+  
   return value;
 }
 
 export async function fetchVisibilitySettings() {
-  const [hiddenCategories, hiddenSubcategories] = await Promise.all([
+  const [hiddenCategories, hiddenSubcategories, showBrandsFilter, brands] = await Promise.all([
     fetchSetting(SETTINGS_KEYS.hiddenCategories, []),
     fetchSetting(SETTINGS_KEYS.hiddenSubcategories, []),
+    fetchSetting(SETTINGS_KEYS.showBrandsFilter, true),
+    fetchSetting(SETTINGS_KEYS.brands, []),
   ]);
 
   return {
     hiddenCategories: Array.isArray(hiddenCategories) ? hiddenCategories : [],
     hiddenSubcategories: Array.isArray(hiddenSubcategories) ? hiddenSubcategories : [],
+    showBrandsFilter: Boolean(showBrandsFilter),
+    brands: Array.isArray(brands) ? brands : [],
   };
 }
 
@@ -291,6 +440,10 @@ export async function saveHiddenSubcategories(categories) {
   return saveSetting(SETTINGS_KEYS.hiddenSubcategories, categories);
 }
 
+export async function saveShowBrandsFilter(show) {
+  return saveSetting(SETTINGS_KEYS.showBrandsFilter, Boolean(show));
+}
+
 export async function fetchSavedAttributes() {
   const attributes = await fetchSetting(SETTINGS_KEYS.savedAttributes, []);
   return Array.isArray(attributes) ? attributes : [];
@@ -298,6 +451,24 @@ export async function fetchSavedAttributes() {
 
 export async function saveSavedAttributes(attributes) {
   return saveSetting(SETTINGS_KEYS.savedAttributes, attributes);
+}
+
+export async function fetchBrands() {
+  const brands = await fetchSetting(SETTINGS_KEYS.brands, []);
+  return Array.isArray(brands) ? brands : [];
+}
+
+export async function saveBrands(brands) {
+  return saveSetting(SETTINGS_KEYS.brands, brands);
+}
+
+export async function fetchCustomCategories() {
+  const cats = await fetchSetting(SETTINGS_KEYS.customCategories, []);
+  return Array.isArray(cats) ? cats : [];
+}
+
+export async function saveCustomCategories(cats) {
+  return saveSetting(SETTINGS_KEYS.customCategories, cats);
 }
 
 export async function fetchWishlistIds(userId) {
@@ -407,20 +578,25 @@ export async function deleteCoupon(code) {
   return fetchCoupons();
 }
 
+// Atomic read-check-increment via a Postgres function (see migration 003) —
+// a plain "read used_count, add 1, write it back" update would let two
+// concurrent checkouts both read the same count and both succeed past the
+// coupon's usage limit. Returns the updated coupon row, or null if the
+// coupon was no longer valid by the time this ran (limit hit concurrently,
+// deactivated, etc.) — the caller must handle that case.
 export async function recordCouponUsage(coupon, userIdentifier) {
   if (!coupon) {
-    return;
+    return null;
   }
 
-  const userUses = coupon.userUses && typeof coupon.userUses === "object" ? { ...coupon.userUses } : {};
-  if (userIdentifier) {
-    userUses[userIdentifier] = Number(userUses[userIdentifier] || 0) + 1;
+  const { data, error } = await supabase.rpc("increment_coupon_usage", {
+    p_code: String(coupon.code).toUpperCase(),
+    p_user_key: userIdentifier || null,
+  });
+  if (error) {
+    throw error;
   }
-
-  unwrap(await supabase.from("coupons").update({
-    used_count: Number(coupon.usedCount || 0) + 1,
-    user_uses: userUses,
-  }).eq("code", String(coupon.code).toUpperCase()));
+  return data ? mapCouponFromRow(data) : null;
 }
 
 export async function fetchOrdersForUser(userId) {
@@ -446,10 +622,26 @@ export async function fetchOrderByOrderId(orderId) {
   return row ? mapOrderFromRow(row) : null;
 }
 
+// Atomic per-month sequence (see migration 005) — returns 1, 2, 3, ... for
+// the given "YYMM" key. Used to build human-friendly order IDs like
+// SWWO-260700001 instead of the old time+random string.
+export async function getNextOrderNumber(yearMonth) {
+  const { data, error } = await supabase.rpc("next_order_number", { p_yearmonth: yearMonth });
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+// Order IDs are generated client-side (see generateOrderId in CheckoutPage)
+// and `order_id` is UNIQUE at the DB level, so a collision surfaces here as
+// Postgres error code 23505 — callers should catch that and retry with a
+// freshly generated ID rather than treating it as a hard failure.
 export async function createOrder(order) {
   const payload = {
     order_id: order.id,
     customer_name: order.customer_name,
+    company: order.company || "",
     email: order.email,
     phone: order.phone,
     user_id: order.user_id || null,
@@ -459,13 +651,60 @@ export async function createOrder(order) {
     discount: Number(order.discount || 0),
     coupon_code: order.coupon_code || null,
     payment_method: order.payment_method,
+    payment_reference: order.payment_reference || "",
     status: order.status || "Processing",
     notes: order.notes || "",
+    address: order.address || "",
+    billing_details: order.billing_details || null,
     items: Array.isArray(order.items) ? order.items : [],
   };
 
-  unwrap(await supabase.from("orders").insert(payload));
+  const { error } = await supabase.from("orders").insert(payload);
+  if (error) {
+    throw error;
+  }
   return fetchOrderByOrderId(order.id);
+}
+
+// Real (non-spoofable) check for the first-order discount, replacing a
+// localStorage flag that anyone could set via devtools. Still client-side —
+// enforced by whatever RLS policy the orders table has — but at least it's
+// checked against actual order history instead of trusting the browser.
+export async function hasCustomerOrderedBefore(email) {
+  if (!email) {
+    return false;
+  }
+  const { count, error } = await supabase
+    .from("orders")
+    .select("id", { count: "exact", head: true })
+    .eq("email", String(email).trim().toLowerCase());
+  if (error) {
+    console.error("hasCustomerOrderedBefore failed:", error.message);
+    return false;
+  }
+  return (count || 0) > 0;
+}
+
+// Lightweight targeted update — unlike upsertProducts, this only touches the
+// stock columns, so it's safe to call with just { id, stockStatus, stockCount }
+// without risking clobbering the rest of the product row.
+export async function syncProductStock(updates) {
+  await Promise.all(
+    updates.map(({ id, stockStatus, stockCount }) =>
+      supabase.from("products").update({ stock_status: stockStatus, stock_count: stockCount }).eq("id", id)
+    )
+  );
+}
+
+export async function deleteOrder(orderId) {
+  // .delete() alone returns no data and no error even when RLS silently
+  // blocks it (0 rows matched) — chaining .select() forces Postgres to
+  // return the rows it actually deleted, so a blocked delete is detectable.
+  const deletedRows = unwrap(await supabase.from("orders").delete().eq("order_id", orderId).select("order_id"));
+  if (!deletedRows || deletedRows.length === 0) {
+    throw new Error("Delete blocked by Database Security (RLS). You are not logged in as an authenticated admin!");
+  }
+  return fetchAllOrders();
 }
 
 export async function updateOrderStatus(orderId, status) {
@@ -473,8 +712,27 @@ export async function updateOrderStatus(orderId, status) {
   return fetchOrderByOrderId(orderId);
 }
 
-export async function uploadBlobToStorage(blob, fileExt = "webp", folder = "products") {
-  const objectPath = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+export function generateSeoPrefix(product) {
+  if (!product) return "";
+  const parts = [
+    product.name,
+    product.brand,
+    (product.categories?.[0] || product.category),
+    "qatar"
+  ];
+  return parts.filter(Boolean).join("-").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") + "-";
+}
+
+export async function uploadBlobToStorage(blob, fileExt = "webp", folder = "products", prefix = "") {
+  let sanitizedPrefix = prefix ? prefix.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "image";
+  if (!prefix) sanitizedPrefix += "-" + Date.now();
+  
+  // To prevent gallery images from overwriting the main image, append a small random string if it's a gallery
+  if (folder.includes("gallery") || folder.includes("variations")) {
+    sanitizedPrefix += "-" + Math.random().toString(36).slice(2, 6);
+  }
+
+  const objectPath = `${folder}/${sanitizedPrefix}.${fileExt}`;
   unwrap(await supabase.storage.from(SUPABASE_STORAGE_BUCKET).upload(objectPath, blob, {
     contentType: blob.type,
     upsert: true,
@@ -483,10 +741,100 @@ export async function uploadBlobToStorage(blob, fileExt = "webp", folder = "prod
   return data.publicUrl;
 }
 
+export async function renameStorageObject(oldUrl, fileExt = "webp", folder = "products", prefix = "") {
+  if (!oldUrl || !oldUrl.includes("/storage/v1/object/public/")) return null;
+  const parts = oldUrl.split("/storage/v1/object/public/" + SUPABASE_STORAGE_BUCKET + "/");
+  if (parts.length !== 2) return null;
+  const oldPath = parts[1];
+  
+  let sanitizedPrefix = prefix ? prefix.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "image";
+  if (!prefix) sanitizedPrefix += "-" + Date.now();
+
+  if (folder.includes("gallery") || folder.includes("variations")) {
+    sanitizedPrefix += "-" + Math.random().toString(36).slice(2, 6);
+  }
+  
+  const newPath = `${folder}/${sanitizedPrefix}.${fileExt}`;
+  
+  unwrap(await supabase.storage.from(SUPABASE_STORAGE_BUCKET).copy(oldPath, newPath));
+  const { data } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(newPath);
+  return data.publicUrl;
+}
+
+// Deletes the actual file from Storage for a public URL previously returned
+// by uploadBlobToStorage — used whenever the DB row referencing it (a
+// product, client logo, partner logo, or blog post) is deleted, so the
+// bucket doesn't accumulate orphaned files forever. Silently no-ops for
+// anything that isn't one of our own storage URLs (external/placeholder
+// images), and never throws — a failed cleanup shouldn't block the actual
+// delete the admin asked for.
+export async function deleteStorageObject(url) {
+  if (!url || typeof url !== "string" || !url.includes("/storage/v1/object/public/" + SUPABASE_STORAGE_BUCKET + "/")) {
+    return;
+  }
+  const parts = url.split("/storage/v1/object/public/" + SUPABASE_STORAGE_BUCKET + "/");
+  if (parts.length !== 2 || !parts[1]) return;
+  try {
+    await supabase.storage.from(SUPABASE_STORAGE_BUCKET).remove([parts[1]]);
+  } catch (error) {
+    console.error("Failed to delete storage object:", parts[1], error);
+  }
+}
+
+export async function deleteStorageObjects(urls) {
+  const unique = [...new Set((urls || []).filter(Boolean))];
+  await Promise.all(unique.map(deleteStorageObject));
+}
+
 export function buildOrderCartItem(product, qty = 1, variation = null) {
   return buildCartItem(product, qty, variation);
 }
 
 export function getInitialProductSeedRows() {
   return catalogProducts.map(mapProductToRow);
+}
+
+export async function deleteProductRecord(id) {
+  const response = await supabase.from("products").delete().eq("id", id);
+  if (response.error) {
+    throw new Error(response.error.message || JSON.stringify(response.error));
+  }
+  return fetchProducts();
+}
+
+export async function linkProductToDolibarr(id, dolibarrId, dolibarrRef) {
+  const response = await supabase
+    .from("products")
+    .update({ dolibarr_id: dolibarrId, dolibarr_ref: dolibarrRef })
+    .eq("id", id);
+  if (response.error) {
+    throw new Error(response.error.message || JSON.stringify(response.error));
+  }
+}
+
+export async function fetchClients() {
+  const data = await fetchSetting(SETTINGS_KEYS.clients, []);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function saveClients(data) {
+  return saveSetting(SETTINGS_KEYS.clients, data);
+}
+
+export async function fetchPartners() {
+  const data = await fetchSetting(SETTINGS_KEYS.partners, []);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function savePartners(data) {
+  return saveSetting(SETTINGS_KEYS.partners, data);
+}
+
+export async function fetchBlogs() {
+  const data = await fetchSetting(SETTINGS_KEYS.blogs, []);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function saveBlogs(data) {
+  return saveSetting(SETTINGS_KEYS.blogs, data);
 }

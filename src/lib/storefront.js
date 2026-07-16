@@ -62,6 +62,11 @@ export function buildCartItem(product, qty = 1, variation = null) {
     cartId,
     id: product.id,
     productId: product.id,
+    // Carried through into the order's items JSON so a placed order records
+    // exactly which website product and which Dolibarr product it came from
+    // — needed to later link the order back to Dolibarr for fulfillment.
+    dolibarrId: product.dolibarr_id || null,
+    dolibarrRef: product.dolibarr_ref || null,
     name: variation?.label ? `${product.name} - ${variation.label}` : product.name,
     price: variation?.price || product.price,
     image,

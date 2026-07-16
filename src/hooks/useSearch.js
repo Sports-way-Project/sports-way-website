@@ -18,7 +18,7 @@ export function useSearch(products, pageLinks) {
       .slice(0, 6)
       .map((product) => ({
         type: "product",
-        href: `product.html?id=${product.id}`,
+        href: `/products/${product.slug || product.id}`,
         label: product.name,
         sublabel: product.category,
         image: product.image || product.img,

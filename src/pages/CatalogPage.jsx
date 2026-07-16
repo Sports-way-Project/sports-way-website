@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { SEO } from "../components/SEO";
 import { ProductCard } from "../components/ProductCard";
 import { PageHero } from "../components/PageHero";
 import { catalogPageConfigs } from "../data/storefrontPages";
@@ -13,39 +15,54 @@ function getFilterMap(config) {
   return Object.fromEntries(filters.map((filter) => [filter.id, filter]));
 }
 
-export function CatalogPage({ currentPath, hiddenSubcategories = [], products, addToCart, toggleWishlist, wishlist }) {
+const EMPTY_CONFIG = { sidebarFilters: [], title: "", description: "", heroImage: "", baseToken: "" };
+
+export function CatalogPage({ currentPath, hiddenSubcategories = [], showBrandsFilter = true, brands = [], products, addToCart, toggleWishlist, wishlist }) {
   const config = catalogPageConfigs[currentPath];
-  const visibleSidebarFilters = useMemo(() => config.sidebarFilters.map((filter) => ({
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Every hook below must run unconditionally regardless of whether `config`
+  // resolves — this route pattern ("/categories/:slug") keeps the same
+  // component instance mounted across param changes, so an early return
+  // before these hooks (moving from a valid to an invalid slug on the same
+  // instance) used to throw a "change in the order of Hooks" error. Falling
+  // back to EMPTY_CONFIG keeps the hook count constant; the actual
+  // "not found" UI is rendered further down, after all hooks have run.
+  const safeConfig = config || EMPTY_CONFIG;
+  const visibleSidebarFilters = useMemo(() => safeConfig.sidebarFilters.map((filter) => ({
     ...filter,
     children: filter.children?.filter((child) => !hiddenSubcategories.includes(child.id)),
-  })), [config.sidebarFilters, hiddenSubcategories]);
-  const filterMap = useMemo(() => getFilterMap({ ...config, sidebarFilters: visibleSidebarFilters }), [config, visibleSidebarFilters]);
+  })), [safeConfig.sidebarFilters, hiddenSubcategories]);
+  const filterMap = useMemo(() => getFilterMap({ ...safeConfig, sidebarFilters: visibleSidebarFilters }), [safeConfig, visibleSidebarFilters]);
   const [activeFilterId, setActiveFilterId] = useState("all");
   const [sortValue, setSortValue] = useState("featured");
   const [priceMin, setPriceMin] = useState("");
   const [priceMax, setPriceMax] = useState("");
+  const [selectedBrands, setSelectedBrands] = useState([]);
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    document.title = `${config.title} - Sports Way Trading Qatar`;
-  }, [config.title]);
+    if (config) document.title = `${safeConfig.title} - Sports Way Trading Qatar`;
+  }, [config, safeConfig.title]);
 
   useEffect(() => {
-    const fromHash = window.location.hash.replace("#", "");
+    const fromHash = location.hash.replace("#", "");
     setActiveFilterId(fromHash && filterMap[fromHash] ? fromHash : "all");
   }, [filterMap]);
 
   useEffect(() => {
     setPage(1);
+    setSelectedBrands([]); // Reset brands when filter changes
     const url = activeFilterId === "all"
-      ? window.location.pathname
-      : `${window.location.pathname}#${activeFilterId}`;
-    window.history.replaceState({}, "", url);
+      ? location.pathname
+      : `${location.pathname}#${activeFilterId}`;
+    navigate(url, { replace: true });
   }, [activeFilterId]);
 
   const baseProducts = useMemo(
-    () => sortByPriority(products.filter((product) => getProductCategories(product).includes(config.baseToken))),
-    [config.baseToken, products],
+    () => sortByPriority(products.filter((product) => getProductCategories(product).includes(safeConfig.baseToken))),
+    [safeConfig.baseToken, products],
   );
 
   const counts = useMemo(() => {
@@ -59,11 +76,48 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
     return next;
   }, [baseProducts, filterMap]);
 
-  const filteredProducts = useMemo(() => {
+  const categoryProducts = useMemo(() => {
     const activeFilter = filterMap[activeFilterId];
-    let next = activeFilter && activeFilter.id !== "all"
+    return activeFilter && activeFilter.id !== "all"
       ? baseProducts.filter((product) => matchProduct(product, activeFilter))
       : [...baseProducts];
+  }, [activeFilterId, baseProducts, filterMap]);
+
+  const brandCounts = useMemo(() => {
+    const mappedBrandNames = (brands || [])
+      .filter((b) => b && typeof b === 'object' && b.category === safeConfig.baseToken)
+      .map((b) => b.name);
+
+    const bCounts = {};
+    const brandDisplayNames = {};
+
+    for (const name of mappedBrandNames) {
+      const lower = name.toLowerCase();
+      bCounts[lower] = 0;
+      brandDisplayNames[lower] = name;
+    }
+
+    for (const p of categoryProducts) {
+      if (p.brand) {
+        const lowerBrand = p.brand.toLowerCase();
+        if (bCounts[lowerBrand] !== undefined) {
+          bCounts[lowerBrand] += 1;
+        }
+      }
+    }
+
+    return Object.entries(bCounts)
+      .map(([lowerBrand, count]) => ({ brand: brandDisplayNames[lowerBrand], count }))
+      .sort((a, b) => b.count - a.count);
+  }, [categoryProducts, brands, safeConfig.baseToken]);
+
+  const filteredProducts = useMemo(() => {
+    let next = [...categoryProducts];
+
+    if (selectedBrands.length > 0) {
+      const lowerSelectedBrands = selectedBrands.map(b => b.toLowerCase());
+      next = next.filter((product) => product.brand && lowerSelectedBrands.includes(product.brand.toLowerCase()));
+    }
 
     const min = Number(priceMin) || 0;
     const max = Number(priceMax) || Number.POSITIVE_INFINITY;
@@ -76,16 +130,13 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
     }
 
     return next;
-  }, [activeFilterId, baseProducts, filterMap, priceMax, priceMin, sortValue]);
+  }, [categoryProducts, priceMax, priceMin, selectedBrands, sortValue]);
 
   const pageSize = 18;
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
   const visibleProducts = filteredProducts.slice((page - 1) * pageSize, page * pageSize);
   const activeFilter = filterMap[activeFilterId];
-  const activeHub = config.hubs?.[activeFilter?.parent || activeFilterId]?.filter((card) => !hiddenSubcategories.includes(card.filterId));
-  const recommendations = baseProducts
-    .filter((product) => !visibleProducts.some((item) => item.id === product.id))
-    .slice(0, 8);
+  const activeHub = safeConfig.hubs?.[activeFilter?.parent || activeFilterId]?.filter((card) => !hiddenSubcategories.includes(card.filterId));
 
   useEffect(() => {
     if (page > totalPages) {
@@ -93,8 +144,22 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
     }
   }, [page, totalPages]);
 
+  if (!config) {
+    return (
+      <div className="container simple-page">
+        <h1 className="section-title">Category not found</h1>
+      </div>
+    );
+  }
+
   return (
-    <>
+        <>
+      <SEO 
+        title={`${config.title} | Buy in Qatar | Sports Way`}
+        description={config.description}
+        image={config.heroImage}
+        url={`https://www.sports-way.com${currentPath}`}
+      />
       <PageHero title={config.title} description={config.description} image={config.heroImage} />
       <div className="container">
         <div className="page-layout">
@@ -109,7 +174,7 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
                     <div key={filter.id}>
                       <button
                         className={`filter-item ${activeFilterId === filter.id ? "active" : ""}`}
-                        onClick={() => setActiveFilterId(filter.id)}
+                        onClick={() => setActiveFilterId(activeFilterId === filter.id ? "all" : filter.id)}
                       >
                         <span>{filter.label}</span>
                         <span className="filter-count">{counts[filter.id] || 0}</span>
@@ -120,7 +185,7 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
                             <button
                               key={child.id}
                               className={`filter-sub-item ${activeFilterId === child.id ? "active-sub" : ""}`}
-                              onClick={() => setActiveFilterId(child.id)}
+                              onClick={() => setActiveFilterId(activeFilterId === child.id ? filter.id : child.id)}
                             >
                               <span>{child.label}</span>
                               <span className="filter-count">{counts[child.id] || 0}</span>
@@ -143,6 +208,34 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
                 </div>
               </div>
             </div>
+
+            {showBrandsFilter && brandCounts.length > 0 ? (
+              <div className="sidebar-card">
+                <div className="sidebar-title" style={{ textTransform: "uppercase" }}>Brands</div>
+                <div className="filter-list" style={{ maxHeight: "300px", overflowY: "auto", paddingRight: "5px" }}>
+                  {brandCounts.map(({ brand, count }) => (
+                    <label key={brand} className="filter-item checkbox-label" style={{ display: "flex", justifyContent: "space-between", cursor: "pointer", alignItems: "center", padding: "4px 0" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedBrands.includes(brand)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedBrands([...selectedBrands, brand]);
+                            } else {
+                              setSelectedBrands(selectedBrands.filter((b) => b !== brand));
+                            }
+                          }}
+                        />
+                        <span style={{ fontSize: "14px", color: "var(--text-muted)" }}>{brand}</span>
+                      </div>
+                      <span className="filter-count" style={{ fontSize: "14px", color: "#666" }}>{count}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
 
             {(config.sidebarExtras || []).map((section) => (
               <div key={section.title} className="sidebar-card">
@@ -179,7 +272,7 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
               </select>
             </div>
 
-            <div className="page-products-grid">
+            <div key={`${activeFilterId}-${page}`} className="page-products-grid admin-page-transition">
               {visibleProducts.length ? visibleProducts.map((product) => (
                 <ProductCard
                   key={product.id}
@@ -203,27 +296,10 @@ export function CatalogPage({ currentPath, hiddenSubcategories = [], products, a
               </div>
             ) : null}
 
-            {recommendations.length ? (
-              <div className="related-section">
-                <h2 className="related-title">You May Also Like</h2>
-                <div className="related-slider-wrap">
-                  <div className="related-grid-scroll">
-                    {recommendations.map((product) => (
-                      <ProductCard
-                        key={product.id}
-                        product={product}
-                        addToCart={addToCart}
-                        toggleWishlist={toggleWishlist}
-                        wishlist={wishlist}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : null}
           </main>
         </div>
       </div>
     </>
   );
 }
+

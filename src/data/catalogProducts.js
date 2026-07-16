@@ -89,7 +89,7 @@ export const catalogProducts = [
     id: 7,
     name: "Power Squat Rack Pro",
     category: "strength",
-    categories: ["gym-equipment", "strength", "racks-benches", "racks", "power-rack"],
+    categories: ["gym-equipment", "strength", "racks-benches", "racks"],
     price: 2999,
     oldPrice: 3699,
     badge: "Trending",

@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Allow: /products/
+Allow: /categories/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /checkout
+Disallow: /cart
+Disallow: /api
+
+Sitemap: https://www.sports-way.com/sitemap.xml

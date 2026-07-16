@@ -5,7 +5,7 @@ export function PageHero({ title, description, image }) {
       <div className="page-hero-overlay" />
       <div className="page-hero-content">
         <div className="breadcrumb">
-          <a href="index.html">Home</a>
+          <a href="/">Home</a>
           <span>/</span>
           <span>{title}</span>
         </div>

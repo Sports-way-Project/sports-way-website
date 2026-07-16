@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes spin {
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* ---------------------------------------------------------------------
+ * Admin motion system — edit these two variables to change every page
+ * transition / toast / hero animation across the admin panel at once.
+ * ------------------------------------------------------------------- */
+:root {
+  --admin-motion-duration: 1.5s;
+  --admin-motion-easing: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Branded loader (logo + ring) shown on the page-transition overlay —
+     independent of --admin-motion-duration since it loops continuously
+     rather than playing once. */
+  --admin-loader-spin-duration: 1.4s;
+  --admin-loader-pulse-duration: 1.5s;
+
+  /* Page-navigation sequencing (AdminShell.jsx reads these at click time):
+     the overlay must be fully opaque (--admin-overlay-fade-duration) before
+     --admin-nav-cover-delay elapses, so the section swap happens hidden
+     behind it instead of flashing the new page first. The whole overlay
+     stays up for at least --admin-page-transition-min from the click. */
+  --admin-overlay-fade-duration: 0.18s;
+  --admin-nav-cover-delay: 0.25s;
+  --admin-page-transition-min: 1s;
+}
+
+@keyframes admin-page-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes admin-toast-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes admin-hero-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.admin-page-transition {
+  animation: admin-page-in var(--admin-motion-duration) var(--admin-motion-easing) both;
+}
+
+.admin-toast-anim {
+  animation: admin-toast-in var(--admin-motion-duration) var(--admin-motion-easing) both;
+}
+
+.admin-hero-anim {
+  animation: admin-hero-in var(--admin-motion-duration) var(--admin-motion-easing) both;
+}
+
+/* ---------------------------------------------------------------------
+ * Branded page-transition loader — restrained version: a thin brand-color
+ * bar sweeps across the very top of the screen (GitHub/YouTube/Notion
+ * style), with the logo sitting static underneath. No spinner, no ring.
+ * Edit --admin-loader-* below to change speed everywhere at once.
+ * ------------------------------------------------------------------- */
+:root {
+  --admin-loader-topbar-duration: 2s;
+  --admin-loader-bounce-duration: 0.9s;
+}
+
+.admin-loader {
+  position: relative;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+}
+
+.admin-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  z-index: 600;
+}
+
+.admin-topbar-fill {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  height: 100%;
+  width: 40%;
+  background: linear-gradient(90deg, #9ca3af, var(--red, #e63946));
+  border-radius: 0 4px 4px 0;
+  animation: admin-topbar-sweep var(--admin-loader-topbar-duration) ease-in-out infinite;
+}
+
+@keyframes admin-topbar-sweep {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+
+.admin-loader-logo-static {
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+  filter: brightness(0) invert(1) drop-shadow(0 4px 18px rgba(0, 0, 0, 0.45));
+  opacity: 0.97;
+}
+
+/* Five bouncing dots, gradient gray -> brand red, staggered so the wave
+   travels left to right. Edit --admin-loader-bounce-duration above (or
+   the gradient colors here) to restyle everywhere at once. */
+.admin-loader-dots-wave {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.admin-loader-wave-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+  animation: admin-dot-bounce var(--admin-loader-bounce-duration) ease-in-out infinite;
+}
+
+.admin-loader-wave-dot:nth-child(1) { background: #9ca3af; animation-delay: 0s; }
+.admin-loader-wave-dot:nth-child(2) { background: #af8995; animation-delay: 0.1s; }
+.admin-loader-wave-dot:nth-child(3) { background: #c16e7b; animation-delay: 0.2s; }
+.admin-loader-wave-dot:nth-child(4) { background: #d45460; animation-delay: 0.3s; }
+.admin-loader-wave-dot:nth-child(5) { background: var(--red, #e63946); animation-delay: 0.4s; }
+
+@keyframes admin-dot-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-16px); }
+}
+
+/* Global cursor pointer for all interactive elements in admin */
+button, [role="button"], label[for], label:has(input[type="checkbox"]), label:has(input[type="file"]), select { cursor: pointer; }
+input, textarea { cursor: text; }
+input[type="checkbox"], input[type="radio"] { cursor: pointer; }
+
+/* Without an explicit color-scheme, some browsers auto-darken email/
+   password inputs specifically (autofill heuristics) while leaving plain
+   text inputs alone — this is why only those two fields looked black.
+   Force light everywhere in the admin panel regardless of OS/browser
+   dark-mode settings. */
+input, textarea, select { color-scheme: light; }
+
+@layer base {
+  /* Thin scrollbar for admin panels */
+  .admin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #e2e8f0 transparent;
+  }
+  .admin-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
+  .admin-scroll::-webkit-scrollbar-track { background: transparent; }
+  .admin-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
+
+  /* Slightly more visible scrollbar for modals — content-dense enough that
+     a near-invisible 5px thumb is easy to miss; rounded pill thumb with a
+     visible track and a brand-tinted hover state. */
+  .admin-modal-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f1f5f9;
+  }
+  .admin-modal-scroll::-webkit-scrollbar { width: 9px; }
+  .admin-modal-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 8px; }
+  .admin-modal-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; border: 2px solid #f1f5f9; }
+  .admin-modal-scroll::-webkit-scrollbar-thumb:hover { background: #f43f5e; }
+}

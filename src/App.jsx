@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+import { Routes, Route, useLocation, Navigate } from "react-router-dom";
 import {
   footerSocials,
   navItems,
@@ -12,6 +14,7 @@ import { useSearch } from "./hooks/useSearch";
 import { useVisibilitySettings } from "./hooks/useVisibilitySettings";
 import { useWishlist } from "./hooks/useWishlist";
 import { SiteShell } from "./components/SiteShell";
+import { BrandLoader } from "./components/BrandLoader";
 import { HomePage } from "./pages/HomePage";
 import { AboutPage, BlogPage, ContactPage, WholesalePage } from "./pages/InfoPages";
 import { CatalogPage } from "./pages/CatalogPage";
@@ -21,116 +24,35 @@ import { CheckoutPage } from "./pages/CheckoutPage";
 import { AccountPage } from "./pages/AccountPage";
 import { OrderSuccessPage } from "./pages/OrderSuccessPage";
 import { AdminPage } from "./pages/AdminPage";
-
-function getCurrentPath() {
-  const path = window.location.pathname.split("/").pop();
-  return path || "index.html";
-}
+import { TermsPage } from "./pages/TermsPage";
+import { PrivacyPage } from "./pages/PrivacyPage";
+import { TermsOfServicePage } from "./pages/TermsOfServicePage";
+import ClientsPage from "./pages/ClientsPage";
+import PartnersPage from "./pages/PartnersPage";
+import BlogPostPage from "./pages/BlogPostPage";
 
 function pageToCategoryKey(path) {
   const map = {
-    "gym-equipment.html": "gym-equipment",
-    "sports-tools.html": "sports-tools",
-    "sportswear.html": "sportswear",
-    "footwear.html": "footwear",
-    "supplements.html": "supplements",
-    "flooring.html": "flooring",
+    "/categories/gym-equipment": "gym-equipment",
+    "/categories/sports-tools": "sports-tools",
+    "/categories/sportswear": "sportswear",
+    "/categories/footwear": "footwear",
+    "/categories/supplements": "supplements",
+    "/categories/flooring": "flooring",
+    "/gym-equipment": "gym-equipment",
+    "/sports-tools": "sports-tools",
+    "/sportswear": "sportswear",
+    "/footwear": "footwear",
+    "/supplements": "supplements",
+    "/flooring": "flooring",
   };
   return map[path] || "";
 }
 
-function renderRoute(path, props) {
-  switch (path) {
-    case "index.html":
-      return <HomePage addToCart={props.addToCart} toggleWishlist={props.toggleWishlist} wishlist={props.wishlist} />;
-    case "about.html":
-      return <AboutPage />;
-    case "blog.html":
-      return <BlogPage />;
-    case "contact.html":
-      return <ContactPage />;
-    case "wholesale.html":
-      return <WholesalePage />;
-    case "gym-equipment.html":
-    case "sports-tools.html":
-    case "sportswear.html":
-    case "footwear.html":
-    case "supplements.html":
-    case "flooring.html":
-      return (
-        <CatalogPage
-          addToCart={props.addToCart}
-          currentPath={path}
-          hiddenSubcategories={props.hiddenSubcategories}
-          products={props.products}
-          toggleWishlist={props.toggleWishlist}
-          wishlist={props.wishlist}
-        />
-      );
-    case "product.html":
-      return (
-        <ProductPage
-          addToCart={props.addToCart}
-          products={props.products}
-          toggleWishlist={props.toggleWishlist}
-          wishlist={props.wishlist}
-        />
-      );
-    case "cart.html":
-      return <CartPage cart={props.cart} changeQty={props.changeQty} />;
-    case "checkout.html":
-      return (
-        <CheckoutPage
-          cart={props.cart}
-          changeQty={props.changeQty}
-          currentUser={props.currentUser}
-          requestPasswordReset={props.requestPasswordReset}
-          sessionUser={props.sessionUser}
-          setCart={props.setCart}
-          signIn={props.signIn}
-          signUp={props.signUp}
-        />
-      );
-    case "my-account.html":
-      return (
-        <AccountPage
-          currentUser={props.currentUser}
-          products={props.products}
-          requestPasswordReset={props.requestPasswordReset}
-          removeWishlistItem={props.removeWishlistItem}
-          saveProfile={props.saveProfile}
-          sessionUser={props.sessionUser}
-          signIn={props.signIn}
-          signOut={props.signOut}
-          signUp={props.signUp}
-          wishlist={props.wishlist}
-          cart={props.cart}
-        />
-      );
-    case "order-success.html":
-      return <OrderSuccessPage />;
-    case "admin.html":
-      return (
-        <AdminPage
-          currentUser={props.currentUser}
-          products={props.products}
-          requestPasswordReset={props.requestPasswordReset}
-          saveProfile={props.saveProfile}
-          sessionUser={props.sessionUser}
-          signIn={props.signIn}
-          signOut={props.signOut}
-          signUp={props.signUp}
-          setProducts={props.setProducts}
-        />
-      );
-    default:
-      return <HomePage addToCart={props.addToCart} toggleWishlist={props.toggleWishlist} wishlist={props.wishlist} />;
-  }
-}
-
 function App() {
-  const currentPath = getCurrentPath();
-  const isAdminRoute = currentPath === "admin.html";
+  const location = useLocation();
+  const currentPath = location.pathname;
+  const isAdminRoute = currentPath === "/admin";
   const { scrolled, showBackToTop } = useScrollFlags();
   const {
     mobileMenuOpen,
@@ -147,10 +69,17 @@ function App() {
     signIn,
     signOut,
     signUp,
+    isRecovery,
+    clearRecovery,
   } = useAccount();
-  const { products, setProducts } = useMasterProducts();
+  const { products, setProducts, deleteProduct } = useMasterProducts();
+  // Products never linked to a Dolibarr product can't be fulfilled, so the
+  // public site shouldn't sell them — the admin still sees the full list
+  // (that's the whole point of the Product Mapping page). This is a
+  // render-layer filter only; it never touches fetchProducts/useMasterProducts.
+  const publicProducts = useMemo(() => products.filter((p) => p.dolibarr_id != null), [products]);
   const { wishlist, toggleWishlist, removeWishlistItem } = useWishlist(sessionUser);
-  const { hiddenCategories, hiddenSubcategories } = useVisibilitySettings();
+  const { hiddenCategories, hiddenSubcategories, showBrandsFilter, brands } = useVisibilitySettings();
   const {
     addToCart,
     cart,
@@ -168,7 +97,7 @@ function App() {
     setSearchOpen,
     setSearchQuery,
   } = useSearch(
-    products,
+    publicProducts,
     pageLinks.filter((page) => !hiddenCategories.includes(pageToCategoryKey(page.href))),
   );
 
@@ -177,21 +106,30 @@ function App() {
   const hiddenCategoryForRoute = hiddenCategories.includes(pageToCategoryKey(currentPath));
 
   if (!authReady) {
-    return null;
+    // Shown on every hard reload/refresh while Supabase resolves the
+    // session — used to be a blank white flash (`return null`).
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "#0f172a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <BrandLoader fullScreen={false} />
+      </div>
+    );
   }
 
   if (isAdminRoute) {
-    return renderRoute(currentPath, {
-      currentUser,
-      products,
-      requestPasswordReset,
-      saveProfile,
-      sessionUser,
-      signIn,
-      signOut,
-      signUp,
-      setProducts,
-    });
+    return (
+      <AdminPage
+        currentUser={currentUser}
+        products={products}
+        requestPasswordReset={requestPasswordReset}
+        saveProfile={saveProfile}
+        sessionUser={sessionUser}
+        signIn={signIn}
+        signOut={signOut}
+        signUp={signUp}
+        setProducts={setProducts}
+        deleteProduct={deleteProduct}
+      />
+    );
   }
 
   return (
@@ -219,43 +157,83 @@ function App() {
       setSearchQuery={setSearchQuery}
       showBackToTop={showBackToTop}
     >
-      {hiddenCategoryForRoute ? renderRoute("index.html", {
-        addToCart,
-        cart,
-        changeQty,
-        currentUser,
-        hiddenSubcategories,
-        products,
-        requestPasswordReset,
-        removeWishlistItem,
-        saveProfile,
-        setCart,
-        setProducts,
-        sessionUser,
-        signIn,
-        signOut,
-        signUp,
-        toggleWishlist,
-        wishlist,
-      }) : renderRoute(currentPath, {
-        addToCart,
-        cart,
-        changeQty,
-        currentUser,
-        hiddenSubcategories,
-        products,
-        requestPasswordReset,
-        removeWishlistItem,
-        saveProfile,
-        setCart,
-        setProducts,
-        sessionUser,
-        signIn,
-        signOut,
-        signUp,
-        toggleWishlist,
-        wishlist,
-      })}
+      {hiddenCategoryForRoute ? (
+        <Navigate to="/" replace />
+      ) : (
+        <Routes>
+          <Route path="/" element={<HomePage addToCart={addToCart} toggleWishlist={toggleWishlist} wishlist={wishlist} />} />
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="/blog" element={<BlogPage />} />
+          <Route path="/blog/:id" element={<BlogPostPage />} />
+          <Route path="/contact" element={<ContactPage />} />
+          <Route path="/wholesale" element={<WholesalePage />} />
+          <Route path="/clients" element={<ClientsPage />} />
+          <Route path="/partners" element={<PartnersPage />} />
+          <Route path="/categories/:slug" element={
+            <CatalogPage
+              addToCart={addToCart}
+              currentPath={currentPath}
+              hiddenSubcategories={hiddenSubcategories}
+              showBrandsFilter={showBrandsFilter}
+              brands={brands}
+              products={publicProducts}
+              toggleWishlist={toggleWishlist}
+              wishlist={wishlist}
+            />
+          } />
+          {/* Legacy routes for backwards compatibility and mapping mapping */}
+          <Route path="/gym-equipment" element={<Navigate to="/categories/gym-equipment" replace />} />
+          <Route path="/sports-tools" element={<Navigate to="/categories/sports-tools" replace />} />
+          <Route path="/sportswear" element={<Navigate to="/categories/sportswear" replace />} />
+          <Route path="/footwear" element={<Navigate to="/categories/footwear" replace />} />
+          <Route path="/supplements" element={<Navigate to="/categories/supplements" replace />} />
+          <Route path="/flooring" element={<Navigate to="/categories/flooring" replace />} />
+          
+          <Route path="/products/:slug" element={
+            <ProductPage
+              addToCart={addToCart}
+              products={publicProducts}
+              toggleWishlist={toggleWishlist}
+              wishlist={wishlist}
+            />
+          } />
+          <Route path="/cart" element={<CartPage cart={cart} changeQty={changeQty} />} />
+          <Route path="/checkout" element={
+            <CheckoutPage
+              cart={cart}
+              changeQty={changeQty}
+              currentUser={currentUser}
+              saveProfile={saveProfile}
+              sessionUser={sessionUser}
+              setCart={setCart}
+              signIn={signIn}
+            />
+          } />
+          <Route path="/my-account" element={
+            <AccountPage
+              cart={cart}
+              clearRecovery={clearRecovery}
+              currentUser={currentUser}
+              isRecovery={isRecovery}
+              products={publicProducts}
+              requestPasswordReset={requestPasswordReset}
+              removeWishlistItem={removeWishlistItem}
+              saveProfile={saveProfile}
+              sessionUser={sessionUser}
+              signIn={signIn}
+              signOut={signOut}
+              signUp={signUp}
+              wishlist={wishlist}
+            />
+          } />
+          <Route path="/order-success" element={<OrderSuccessPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms-of-service" element={<TermsOfServicePage />} />
+          <Route path="/account" element={<Navigate to="/my-account" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      )}
     </SiteShell>
   );
 }

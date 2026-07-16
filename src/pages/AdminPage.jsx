@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   adminCategoryOptions,
   adminCategoryToggles,
@@ -7,7 +7,42 @@ import {
 } from "../data/adminData";
 import { formatPrice } from "../lib/format";
 import {
+  BoxIcon,
+  CloseIcon,
+  EyeIcon,
+  FileTextIcon,
+  GridIcon,
+  HandshakeIcon,
+  LayersIcon,
+  MenuIcon,
+  PanelLeftIcon,
+  ReceiptIcon,
+  TagIcon,
+  UsersIcon,
+} from "../components/Icons";
+import { ProductWizard } from "../components/admin/ProductWizard";
+import { AdminBlogList } from "../components/admin/AdminBlogList";
+import { AdminBlogView } from "../components/admin/AdminBlogView";
+import { AdminBlogEditor } from "../components/admin/AdminBlogEditor";
+import { AdminShell } from "../components/admin/AdminShell";
+import { AdminDashboard } from "../components/admin/AdminDashboard";
+import { AdminProducts } from "../components/admin/AdminProducts";
+import { AdminProductView } from "../components/admin/AdminProductView";
+import { AdminProductEdit } from "../components/admin/AdminProductEdit";
+import { AdminCatalog } from "../components/admin/AdminCatalog";
+import { AdminStocks } from "../components/admin/AdminStocks";
+import { AdminCategories } from "../components/admin/AdminCategories";
+import { AdminBrands } from "../components/admin/AdminBrands";
+import { AdminAttributes } from "../components/admin/AdminAttributes";
+import { AdminProductMapping } from "../components/admin/AdminProductMapping";
+import { AdminVisibility } from "../components/admin/AdminVisibility";
+import { AdminOrders } from "../components/admin/AdminOrders";
+import { AdminUsers } from "../components/admin/AdminUsers";
+import { AdminCoupons } from "../components/admin/AdminCoupons";
+import { AdminContent } from "../components/admin/AdminContent";
+import {
   deleteCoupon,
+  deleteOrder,
   fetchAllOrders,
   fetchCoupons,
   fetchSavedAttributes,
@@ -19,14 +54,41 @@ import {
   updateOrderStatus,
   uploadBlobToStorage,
   upsertCoupon,
+  fetchBrands,
+  saveBrands,
+  fetchCustomCategories,
+  saveCustomCategories,
+  saveShowBrandsFilter,
+  generateSeoPrefix,
+  renameStorageObject,
+  fetchClients,
+  saveClients,
+  fetchPartners,
+  savePartners,
+  fetchBlogs,
+  saveBlogs,
+  upsertProducts,
+  deleteStorageObject,
+  deleteStorageObjects,
 } from "../lib/storefrontApi";
+import { supabase } from "../lib/supabase";
+import { createAdmin, deleteUserAccount, getLiveStock, listAdmins, updateAdminRole } from "../lib/fastapiClient";
+import { AdminManageAdmins } from "../components/admin/AdminManageAdmins";
+import { showAlert, showConfirm } from "../lib/dialog.jsx";
+import { friendlyApiError } from "../lib/apiError";
+import { isAdmin, isSuperAdmin } from "../lib/roles";
+import { useAdminPageTransition } from "../hooks/useAdminPageTransition";
+import { playNotificationSound, setFaviconBadge, setTitleBadge } from "../lib/adminNotify";
+import { BrandLoader } from "../components/BrandLoader";
 
 const ADMIN_PAGE_SIZE = 18;
 
 const initialProductForm = {
   id: "",
   name: "",
+  slug: "",
   price: "",
+  oldPrice: "",
   stockStatus: "instock",
   stockCount: "",
   badge: "",
@@ -37,6 +99,7 @@ const initialProductForm = {
   description: "",
   featured: true,
   categories: [],
+  brand: "",
 };
 
 const initialCouponForm = {
@@ -115,10 +178,21 @@ function paginate(items, page) {
   };
 }
 
-export function AdminPage({ currentUser, products, requestPasswordReset, setProducts, signIn, signOut }) {
-  const [section, setSection] = useState("visibility");
+export function AdminPage({ currentUser, products, requestPasswordReset, setProducts, deleteProduct, signIn, signOut, signUp }) {
+  const [section, setSection] = useState("dashboard");
+  const [orderIdToOpen, setOrderIdToOpen] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("adminSidebarCollapsed") === "1");
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [productWizardOpen, setProductWizardOpen] = useState(false);
+  const [wizardInitialData, setWizardInitialData] = useState(null);
+  const [productMode, setProductMode] = useState("list"); // "list" | "view" | "edit"
+  const [productPageData, setProductPageData] = useState(null);
+  const [blogMode, setBlogMode] = useState("list"); // "list" | "view" | "edit"
+  const [blogPageData, setBlogPageData] = useState(null);
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [loginSubmitting, setLoginSubmitting] = useState(false);
   const [search, setSearch] = useState("");
   const [productPage, setProductPage] = useState(1);
   const [orderPage, setOrderPage] = useState(1);
@@ -130,16 +204,74 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [history, setHistory] = useState([]);
   const [hiddenCategories, setHiddenCategories] = useState([]);
   const [hiddenSubcategories, setHiddenSubcategories] = useState([]);
+  const [showBrandsFilter, setShowBrandsFilter] = useState(true);
   const [orders, setOrders] = useState([]);
+  const knownOrderIdsRef = useRef(null);
   const [users, setUsers] = useState([]);
+  const [admins, setAdmins] = useState([]);
   const [coupons, setCoupons] = useState([]);
   const [couponForm, setCouponForm] = useState(initialCouponForm);
-  const [toast, setToast] = useState("");
+  const [brands, setBrands] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [partners, setPartners] = useState([]);
+  const [blogs, setBlogs] = useState([]);
 
-  const authed = currentUser?.role === "admin";
+  const [newBrand, setNewBrand] = useState("");
+  const [newBrandCategory, setNewBrandCategory] = useState("gym-equipment");
+  const [editingBrand, setEditingBrand] = useState(null);
+  const [newCategory, setNewCategory] = useState("");
+  const [toast, setToast] = useState("");
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const [newUsersBadge, setNewUsersBadge] = useState(0);
+  const [newOrdersBadge, setNewOrdersBadge] = useState(0);
+  // Per-order "unseen" tracking for the blue row highlight in AdminOrders —
+  // separate from newOrdersBadge (a plain count), this is the actual set of
+  // order ids to highlight, cleared one at a time as each is opened.
+  const [newOrderIds, setNewOrderIds] = useState(() => new Set());
+  function markOrderSeen(orderId) {
+    setNewOrderIds((prev) => {
+      if (!prev.has(orderId)) return prev;
+      const next = new Set(prev);
+      next.delete(orderId);
+      return next;
+    });
+  }
+  const authed = isAdmin(currentUser?.role);
+
+  const { pageTransitioning, navigate, runWithTransition } = useAdminPageTransition(
+    (id) => { setSection(id); setProductMode("list"); setProductPageData(null); setBlogMode("list"); setBlogPageData(null); },
+    {
+      onBadgeClear: (id) => {
+        if (id === "orders") { setNewOrdersBadge(0); localStorage.setItem("adminLastViewedOrders", new Date().toISOString()); }
+        if (id === "users")  { setNewUsersBadge(0);  localStorage.setItem("adminLastViewedUsers",  new Date().toISOString()); }
+      },
+    },
+  );
+  function goTo(id) { navigate(id, section); }
+
+  // Deletions are superadmin-only — regular admins keep full create/edit
+  // access everywhere, but destructive/hard-to-undo actions are gated here.
+  // This is a UX guard (fast, clear message); the real boundary is
+  // migration 007's RLS policies, which block the same writes at the DB
+  // level even if this check were bypassed.
+  function requireSuperAdmin(actionLabel) {
+    if (!isSuperAdmin(currentUser?.role)) {
+      showAlert(`Only a superadmin can ${actionLabel}.`);
+      return false;
+    }
+    return true;
+  }
 
   useEffect(() => {
     document.title = "Admin Dashboard - Sports Way Trading";
+    // Override storefront's dark body background for the admin page
+    document.body.style.background = "#f8fafc";
+    document.body.style.color = "#111827";
+    return () => {
+      document.body.style.background = "";
+      document.body.style.color = "";
+    };
   }, []);
 
   useEffect(() => {
@@ -159,12 +291,17 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     let active = true;
 
     const load = async () => {
-      const [visibility, nextAttributes, nextOrders, nextUsers, nextCoupons] = await Promise.all([
+      const [visibility, nextAttributes, nextOrders, nextUsers, nextCoupons, nextBrands, nextCats, nextClients, nextPartners, nextBlogs] = await Promise.all([
         fetchVisibilitySettings(),
         fetchSavedAttributes(),
         fetchAllOrders(),
         listProfiles(),
         fetchCoupons(),
+        fetchBrands(),
+        fetchCustomCategories(),
+        fetchClients(),
+        fetchPartners(),
+        fetchBlogs(),
       ]);
 
       if (!active) {
@@ -173,17 +310,133 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
 
       setHiddenCategories(visibility.hiddenCategories);
       setHiddenSubcategories(visibility.hiddenSubcategories);
+      setShowBrandsFilter(visibility.showBrandsFilter);
       setAttributes(nextAttributes);
       setOrders(nextOrders);
       setUsers(nextUsers);
       setCoupons(nextCoupons);
+      setBrands(nextBrands);
+      setCustomCategories(nextCats);
+      setClients(nextClients);
+      setPartners(nextPartners);
+      setBlogs(nextBlogs);
+
+      // Calculate offline missed badges
+      const lastViewedOrders = localStorage.getItem("adminLastViewedOrders") || 0;
+      const lastViewedUsers = localStorage.getItem("adminLastViewedUsers") || 0;
+      
+      const missedOrderRows = nextOrders.filter(o => new Date(o.created_at).getTime() > new Date(lastViewedOrders).getTime());
+      const missedUsers = nextUsers.filter(u => new Date(u.created_at).getTime() > new Date(lastViewedUsers).getTime()).length;
+
+      setNewOrdersBadge(missedOrderRows.length);
+      setNewUsersBadge(missedUsers);
+      setNewOrderIds(new Set(missedOrderRows.map((o) => o.id)));
+      knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
     };
 
     load();
+
     return () => {
       active = false;
     };
   }, [authed]);
+
+  async function refreshAdmins() {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (!token) return;
+    setAdmins(await listAdmins(token));
+  }
+
+  useEffect(() => {
+    if (authed && isSuperAdmin(currentUser?.role)) {
+      refreshAdmins();
+    }
+  }, [authed, currentUser?.role]);
+
+  // Real-time: refresh users + orders lists and show notification badges
+  useEffect(() => {
+    if (!authed) return;
+    const channel = supabase
+      .channel("admin-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "profiles" },
+        async () => {
+          const nextUsers = await listProfiles();
+          setUsers(nextUsers);
+          setNewUsersBadge((n) => n + 1);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "profiles" },
+        async () => {
+          const nextUsers = await listProfiles();
+          setUsers(nextUsers);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "orders" },
+        async () => {
+          const nextOrders = await fetchAllOrders();
+          const previouslyKnown = knownOrderIdsRef.current;
+          const freshIds = previouslyKnown ? nextOrders.filter((o) => !previouslyKnown.has(o.id)).map((o) => o.id) : [];
+          setOrders(nextOrders);
+          knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
+          if (freshIds.length > 0) {
+            setNewOrderIds((prev) => new Set([...prev, ...freshIds]));
+          }
+          setNewOrdersBadge((n) => n + 1);
+          playNotificationSound();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [authed]);
+
+  // Belt-and-suspenders polling fallback alongside the realtime subscription
+  // above — Supabase Realtime websockets can silently drop on long-lived
+  // admin sessions (sleep/wake, flaky wifi, backgrounded tab) without an
+  // obvious reconnect failure. This re-fetches every 20s so data never goes
+  // stale for longer than that even if the socket died quietly — and it also
+  // diffs against the last known order IDs to catch (badge + sound) any new
+  // order the realtime socket missed, so an admin idle on another tab/app
+  // still gets notified even if the websocket silently dropped.
+  useEffect(() => {
+    if (!authed) return;
+    const timer = window.setInterval(async () => {
+      const [nextOrders, nextUsers] = await Promise.all([fetchAllOrders(), listProfiles()]);
+      setOrders(nextOrders);
+      setUsers(nextUsers);
+      if (knownOrderIdsRef.current) {
+        const newOnes = nextOrders.filter((o) => !knownOrderIdsRef.current.has(o.id));
+        if (newOnes.length > 0) {
+          setNewOrdersBadge((n) => n + newOnes.length);
+          setNewOrderIds((prev) => new Set([...prev, ...newOnes.map((o) => o.id)]));
+          playNotificationSound();
+        }
+      }
+      knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, [authed]);
+
+  // Favicon dot + "(N) " tab title prefix while there are unseen new orders
+  // — mirrors the sidebar badge so it's visible even when the admin has
+  // switched to a different browser tab.
+  useEffect(() => {
+    setFaviconBadge(newOrdersBadge > 0);
+    setTitleBadge(newOrdersBadge);
+  }, [newOrdersBadge]);
+
+  // Live count, not a "new since last visit" badge like orders/users — a
+  // product either is or isn't linked to Dolibarr right now.
+  const unlinkedProductsBadge = useMemo(() => products.filter((p) => !p.dolibarr_id).length, [products]);
 
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -245,13 +498,17 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
 
   async function handleAdminLogin(event) {
     event.preventDefault();
+    const enteredEmail = loginForm.email.trim();
+    const enteredPassword = loginForm.password;
+
+    setLoginSubmitting(true);
     try {
       const profile = await signIn({
-        email: loginForm.email.trim(),
-        password: loginForm.password,
+        email: enteredEmail,
+        password: enteredPassword,
       });
 
-      if (profile?.role !== "admin") {
+      if (!isAdmin(profile?.role)) {
         await signOut();
         setLoginError("This account is not marked as admin.");
         return;
@@ -260,36 +517,138 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       setLoginError("");
     } catch (error) {
       setLoginError(error.message || "Incorrect email or password.");
+    } finally {
+      setLoginSubmitting(false);
     }
   }
 
   async function toggleCategoryVisibility(value, nextVisible) {
+    const previous = hiddenCategories;
     const nextCategories = nextVisible
       ? hiddenCategories.filter((item) => item !== value)
       : [...new Set([...hiddenCategories, value])];
     setHiddenCategories(nextCategories);
-    await saveHiddenCategories(nextCategories);
+    try {
+      await saveHiddenCategories(nextCategories);
+      setToast("Category visibility updated.");
+    } catch {
+      setHiddenCategories(previous);
+      setToast("Failed to update visibility.");
+    }
+  }
+
+  async function toggleBrandsFilterVisibility(nextVisible) {
+    const previous = showBrandsFilter;
+    setShowBrandsFilter(nextVisible);
+    try {
+      await saveShowBrandsFilter(nextVisible);
+      setToast("Brands filter visibility updated.");
+    } catch {
+      setShowBrandsFilter(previous);
+      setToast("Failed to update visibility.");
+    }
   }
 
   async function toggleSubcategoryVisibility(value, nextVisible) {
+    const previous = hiddenSubcategories;
     const nextSubcategories = nextVisible
       ? hiddenSubcategories.filter((item) => item !== value)
       : [...new Set([...hiddenSubcategories, value])];
     setHiddenSubcategories(nextSubcategories);
-    await saveHiddenSubcategories(nextSubcategories);
+    try {
+      await saveHiddenSubcategories(nextSubcategories);
+    } catch (err) {
+      setHiddenSubcategories(previous);
+      showAlert("Database Error: " + err.message);
+    }
   }
 
   function updateCategorySelection(value, checked) {
-    setProductForm((current) => ({
-      ...current,
-      categories: checked ? [...new Set([...current.categories, value])] : current.categories.filter((item) => item !== value),
-    }));
+    const parentMap = {
+      "cardio": ["gym-equipment"],
+      "treadmills": ["gym-equipment", "cardio"],
+      "bikes": ["gym-equipment", "cardio"],
+      "ellipticals": ["gym-equipment", "cardio"],
+      "rowers": ["gym-equipment", "cardio"],
+      "stairs": ["gym-equipment", "cardio"],
+      "strength": ["gym-equipment"],
+      "selectorized": ["gym-equipment", "strength"],
+      "plate-loaded": ["gym-equipment", "strength"],
+      "cable-motion": ["gym-equipment", "strength"],
+      "multi-stations": ["gym-equipment", "strength"],
+      "racks-benches": ["gym-equipment"],
+      "racks": ["gym-equipment", "racks-benches"],
+      "benches": ["gym-equipment", "racks-benches"],
+      "bars-weights": ["gym-equipment"],
+      "bars": ["gym-equipment", "bars-weights"],
+      "weights": ["gym-equipment", "bars-weights"],
+      "accessories": ["gym-equipment"],
+      "boxing": ["gym-equipment"],
+      "football": ["sports-tools"],
+      "basketball": ["sports-tools"],
+      "volleyball": ["sports-tools"],
+      "indoor": ["sports-tools"],
+      "other": ["sports-tools"],
+      "training": ["sports-tools"],
+      "sports-accessories": ["sports-tools"],
+      "gloves": ["sports-tools"],
+      "protector": ["sports-tools"],
+      "socks": ["sports-tools", "sportswear"],
+      "bags": ["sports-tools"],
+      "caps": ["sports-tools", "sportswear"],
+      "rackets": ["sports-tools"],
+      "bottles": ["sports-tools"],
+      "mens": ["sportswear"],
+      "ladies": ["sportswear"],
+      "kids": ["sportswear"],
+      "tracksuit": ["sportswear"],
+      "sports-set": ["sportswear"],
+      "t-shirt": ["sportswear"],
+      "polo-shirt": ["sportswear"],
+      "pants": ["sportswear"],
+      "shorts": ["sportswear"],
+      "footwear": ["sportswear"],
+      "running": ["sportswear", "footwear"],
+      "futsal": ["sportswear", "footwear"],
+      "protein": ["supplements"],
+      "creatine": ["supplements"],
+      "preworkout": ["supplements"],
+      "vitamins": ["supplements"],
+      "minerals": ["supplements"],
+      "fatburner": ["supplements"],
+      "gym-mats": ["flooring"],
+      "sports-flooring": ["flooring"],
+      "rubber": ["flooring"],
+      "grass": ["flooring"],
+      "vinyl": ["flooring"],
+      "wood": ["flooring"],
+      "indoor-flooring": ["flooring"],
+      "outdoor-flooring": ["flooring"]
+    };
+
+    setProductForm((current) => {
+      let nextCategories = new Set(current.categories);
+      
+      if (checked) {
+        nextCategories.add(value);
+        if (parentMap[value]) {
+          parentMap[value].forEach(parent => nextCategories.add(parent));
+        }
+      } else {
+        nextCategories.delete(value);
+      }
+
+      return {
+        ...current,
+        categories: Array.from(nextCategories),
+      };
+    });
   }
 
   async function saveProduct(event) {
     event.preventDefault();
     if (!productForm.categories.length) {
-      window.alert("Please select at least one category.");
+      showAlert("Please select at least one category.");
       return;
     }
 
@@ -306,10 +665,11 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     const nextProduct = {
       id: productForm.id ? Number(productForm.id) : Date.now(),
       name: productForm.name,
+      slug: productForm.slug || productForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, ""),
       category: productForm.categories[0],
       categories: productForm.categories,
       price: minVariationPrice ?? Number(productForm.price || 0),
-      oldPrice: existingProduct?.oldPrice ?? null,
+      oldPrice: productForm.oldPrice === "" ? null : Number(productForm.oldPrice || 0) || null,
       stockStatus: productForm.stockStatus,
       stockCount: productForm.stockCount === "" ? null : Number(productForm.stockCount),
       rating: existingProduct?.rating ?? 5,
@@ -317,7 +677,7 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       badge: productForm.badge,
       img: productForm.cover,
       image: productForm.cover,
-      imgHover: productForm.hover,
+      imgHover: productForm.hover || productForm.cover,
       gallery: productForm.galleryText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
       shortDesc: productForm.shortDesc,
       description: productForm.description,
@@ -325,16 +685,59 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       variations: normalizedVariations,
       attributes: attributes.filter((attribute) => attribute.name && attribute.values),
       cover: productForm.cover,
+      brand: productForm.brand,
     };
 
-    const nextProducts = productForm.id
-      ? products.map((product) => product.id === nextProduct.id ? { ...product, ...nextProduct } : product)
-      : [...products, nextProduct];
+    await runWithTransition(async () => {
+      try {
+        // Auto-upload any base64 images to Storage before saving to DB
+        const uploadedImages = {};
+        for (const field of ["img", "image", "imgHover", "cover"]) {
+          if (typeof nextProduct[field] === "string" && nextProduct[field].startsWith("data:image/")) {
+            const base64Str = nextProduct[field];
+            if (!uploadedImages[base64Str]) {
+              const blob = dataUrlToBlob(base64Str);
+              const basePrefix = generateSeoPrefix(nextProduct) || (nextProduct.name || "product");
+              const prefix = field.toLowerCase().includes("hover") ? `${basePrefix}-hover` : basePrefix;
+              uploadedImages[base64Str] = await uploadBlobToStorage(blob, "webp", "products", prefix);
+            }
+            nextProduct[field] = uploadedImages[base64Str];
+          }
+        }
 
-    await saveSavedAttributes(attributes);
-    await persistProducts(nextProducts);
-    resetEditor();
-    setToast(productForm.id ? "Product updated successfully." : "Product added successfully.");
+        if (Array.isArray(nextProduct.gallery)) {
+          nextProduct.gallery = await Promise.all(nextProduct.gallery.map(async (item) => {
+            if (typeof item === "string" && item.startsWith("data:image/")) {
+              return uploadBlobToStorage(dataUrlToBlob(item), "webp", "products/gallery", nextProduct.name || "product");
+            }
+            return item;
+          }));
+        }
+
+        if (Array.isArray(nextProduct.variations)) {
+          nextProduct.variations = await Promise.all(nextProduct.variations.map(async (variation) => {
+            if (typeof variation.img === "string" && variation.img.startsWith("data:image/")) {
+              return {
+                ...variation,
+                img: await uploadBlobToStorage(dataUrlToBlob(variation.img), "webp", "products/variations", nextProduct.name || "product"),
+              };
+            }
+            return variation;
+          }));
+        }
+
+        const nextProducts = productForm.id
+          ? products.map((product) => product.id === nextProduct.id ? { ...product, ...nextProduct } : product)
+          : [...products, nextProduct];
+
+        await persistProducts(nextProducts);
+        resetEditor();
+        setToast(productForm.id ? "Product updated successfully." : "Product added successfully.");
+      } catch (err) {
+        console.error(err);
+        showAlert("Database Error: " + friendlyApiError(err));
+      }
+    });
   }
 
   function editProduct(id) {
@@ -345,7 +748,9 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     setProductForm({
       id: String(product.id),
       name: product.name || "",
+      slug: product.slug || "",
       price: String(product.price || ""),
+      oldPrice: product.oldPrice ? String(product.oldPrice) : "",
       stockStatus: product.stockStatus || "instock",
       stockCount: product.stockCount ?? "",
       badge: product.badge || "",
@@ -356,18 +761,36 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       description: product.description || "",
       featured: Boolean(product.featured),
       categories: product.categories || [product.category].filter(Boolean),
+      brand: product.brand || "",
     });
     setVariations(product.variations || []);
     setAttributes(product.attributes?.length ? product.attributes : attributes);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function deleteProduct(id) {
-    if (!window.confirm("Are you sure you want to delete this product?")) {
+  async function handleDeleteProduct(id) {
+    if (!requireSuperAdmin("delete a product")) return;
+    if (!(await showConfirm("Are you sure you want to delete this product?"))) {
       return;
     }
-    await persistProducts(products.filter((product) => product.id !== id));
-    setToast("Product removed.");
+    await runWithTransition(async () => {
+      try {
+        const product = products.find((p) => p.id === id);
+        await deleteProduct(id);
+        if (product) {
+          const variationImages = Array.isArray(product.variations) ? product.variations.map((v) => v.img) : [];
+          await deleteStorageObjects([
+            product.img, product.image, product.imgHover, product.cover,
+            ...(product.gallery || []),
+            ...variationImages,
+          ]);
+        }
+        setToast("Product removed.");
+      } catch (err) {
+        console.error(err);
+        showAlert("Database Error: " + friendlyApiError(err));
+      }
+    });
   }
 
   function undoLastChange() {
@@ -404,10 +827,49 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     setAttributes((current) => current.filter((_, currentIndex) => currentIndex !== index));
   }
 
+  async function handleAddSavedAttribute(attribute) {
+    await runWithTransition(async () => {
+      try {
+        const next = [...attributes, attribute];
+        await saveSavedAttributes(next);
+        setAttributes(next);
+        setToast("Attribute added.");
+      } catch (err) {
+        showAlert("Failed to add attribute: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleUpdateSavedAttribute(index, patch) {
+    await runWithTransition(async () => {
+      try {
+        const next = attributes.map((attribute, currentIndex) => currentIndex === index ? { ...attribute, ...patch } : attribute);
+        await saveSavedAttributes(next);
+        setAttributes(next);
+        setToast("Attribute updated.");
+      } catch (err) {
+        showAlert("Failed to update attribute: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleRemoveSavedAttribute(index) {
+    await runWithTransition(async () => {
+      try {
+        const next = attributes.filter((_, currentIndex) => currentIndex !== index);
+        await saveSavedAttributes(next);
+        setAttributes(next);
+        setToast("Attribute removed.");
+      } catch (err) {
+        showAlert("Failed to remove attribute: " + friendlyApiError(err));
+      }
+    });
+  }
+
   function generateVariationsFromAttributes() {
     const activeAttributes = attributes.filter((attribute) => attribute.name && attribute.values);
     if (!activeAttributes.length) {
-      window.alert("Add at least one attribute first.");
+      showAlert("Add at least one attribute first.");
       return;
     }
 
@@ -430,9 +892,14 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   }
 
   async function importCsv(file) {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const rows = parseCsv(String(reader.result || ""));
+    await runWithTransition(async () => {
+      const text = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = reject;
+        reader.readAsText(file);
+      });
+      const rows = parseCsv(text);
       const imported = rows.map((row) => {
         const categories = (row.categories || row.category || "")
           .split("|")
@@ -460,122 +927,147 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       });
       await persistProducts([...products, ...imported]);
       setToast(`Imported ${imported.length} products from CSV.`);
-    };
-    reader.readAsText(file);
+    });
   }
 
   async function optimizeDatabase() {
-    try {
-      let optimizedCount = 0;
-      const nextProducts = [];
+    await runWithTransition(async () => {
+      try {
+        let optimizedCount = 0;
+        const nextProducts = [];
 
-      for (const product of products) {
-        const nextProduct = { ...product };
-        for (const field of ["img", "image", "imgHover"]) {
-          if (typeof nextProduct[field] === "string" && nextProduct[field].startsWith("data:image/")) {
-            nextProduct[field] = await compressImage(nextProduct[field], 800, 0.65);
-            optimizedCount += 1;
+        for (const product of products) {
+          const nextProduct = { ...product };
+          for (const field of ["img", "image", "imgHover"]) {
+            if (typeof nextProduct[field] === "string" && nextProduct[field].startsWith("data:image/")) {
+              nextProduct[field] = await compressImage(nextProduct[field], 800, 0.65);
+              optimizedCount += 1;
+            }
           }
+          if (Array.isArray(nextProduct.gallery)) {
+            nextProduct.gallery = await Promise.all(nextProduct.gallery.map(async (item) => {
+              if (typeof item === "string" && item.startsWith("data:image/")) {
+                optimizedCount += 1;
+                return compressImage(item, 800, 0.65);
+              }
+              return item;
+            }));
+          }
+          if (Array.isArray(nextProduct.variations)) {
+            nextProduct.variations = await Promise.all(nextProduct.variations.map(async (variation) => {
+              if (typeof variation.img === "string" && variation.img.startsWith("data:image/")) {
+                optimizedCount += 1;
+                return { ...variation, img: await compressImage(variation.img, 600, 0.65) };
+              }
+              return variation;
+            }));
+          }
+          nextProducts.push(nextProduct);
         }
-        if (Array.isArray(nextProduct.gallery)) {
-          nextProduct.gallery = await Promise.all(nextProduct.gallery.map(async (item) => {
-            if (typeof item === "string" && item.startsWith("data:image/")) {
-              optimizedCount += 1;
-              return compressImage(item, 800, 0.65);
-            }
-            return item;
-          }));
-        }
-        if (Array.isArray(nextProduct.variations)) {
-          nextProduct.variations = await Promise.all(nextProduct.variations.map(async (variation) => {
-            if (typeof variation.img === "string" && variation.img.startsWith("data:image/")) {
-              optimizedCount += 1;
-              return { ...variation, img: await compressImage(variation.img, 600, 0.65) };
-            }
-            return variation;
-          }));
-        }
-        nextProducts.push(nextProduct);
-      }
 
-      await persistProducts(nextProducts);
-      setToast(`Optimized ${optimizedCount} images.`);
-    } catch (error) {
-      window.alert(`Image optimization failed: ${error.message}`);
-    }
+        await persistProducts(nextProducts);
+        setToast(`Optimized ${optimizedCount} images.`);
+      } catch (error) {
+        showAlert(`Image optimization failed: ${error.message}`);
+      }
+    });
   }
 
   async function migrateImagesAndSyncToSupabase() {
+    await runWithTransition(async () => {
     try {
       const nextProducts = [];
       let migratedCount = 0;
       for (const product of products) {
         const nextProduct = { ...product };
-        for (const field of ["img", "image", "imgHover"]) {
-          if (typeof nextProduct[field] === "string" && nextProduct[field].startsWith("data:image/")) {
-            const blob = dataUrlToBlob(nextProduct[field]);
-            nextProduct[field] = await uploadBlobToStorage(blob, "webp", "products");
+        const prefix = generateSeoPrefix(nextProduct);
+        const prefixCheck = prefix ? prefix.slice(0, -1) : "";
+
+        async function processImage(url, folder) {
+          if (!url) return url;
+          if (typeof url === "string" && url.startsWith("data:image/")) {
             migratedCount += 1;
-          }
-        }
-        if (Array.isArray(nextProduct.gallery)) {
-          nextProduct.gallery = await Promise.all(nextProduct.gallery.map(async (item) => {
-            if (typeof item === "string" && item.startsWith("data:image/")) {
-              migratedCount += 1;
-              return uploadBlobToStorage(dataUrlToBlob(item), "webp", "products/gallery");
+            return uploadBlobToStorage(dataUrlToBlob(url), "webp", folder, prefix);
+          } else if (typeof url === "string" && url.startsWith("http")) {
+            if (prefixCheck && !url.includes(prefixCheck)) {
+              try {
+                const newUrl = await renameStorageObject(url, "webp", folder, prefix);
+                if (newUrl) {
+                  migratedCount += 1;
+                  return newUrl;
+                }
+              } catch (e) {
+                console.error("Failed to migrate", url);
+              }
             }
-            return item;
-          }));
+          }
+          return url;
         }
+
+        for (const field of ["img", "image", "imgHover", "cover"]) {
+          nextProduct[field] = await processImage(nextProduct[field], "products");
+        }
+
+        if (Array.isArray(nextProduct.gallery)) {
+          nextProduct.gallery = await Promise.all(nextProduct.gallery.map(item => processImage(item, "products/gallery")));
+        }
+
         if (Array.isArray(nextProduct.variations)) {
           nextProduct.variations = await Promise.all(nextProduct.variations.map(async (variation) => {
-            if (typeof variation.img === "string" && variation.img.startsWith("data:image/")) {
-              migratedCount += 1;
-              return {
-                ...variation,
-                img: await uploadBlobToStorage(dataUrlToBlob(variation.img), "webp", "products/variations"),
-              };
-            }
-            return variation;
+            return {
+              ...variation,
+              img: await processImage(variation.img, "products/variations"),
+            };
           }));
         }
+
         nextProducts.push(nextProduct);
       }
 
       await persistProducts(nextProducts);
       setToast(`Migrated ${migratedCount} images and synced products.`);
     } catch (error) {
-      window.alert(`Image migration failed: ${error.message}`);
+      showAlert(`Image migration failed: ${error.message}`);
     }
+    });
   }
 
   async function saveCoupon() {
     if (!couponForm.code || !couponForm.discount) {
-      window.alert("Enter coupon code and discount.");
+      showAlert("Enter coupon code and discount.");
       return;
     }
 
-    const nextCoupons = await upsertCoupon({
-      code: couponForm.code.toUpperCase(),
-      discountType: couponForm.discountType,
-      discount: Number(couponForm.discount),
-      limitPerCoupon: couponForm.limitPerCoupon ? Number(couponForm.limitPerCoupon) : null,
-      limitPerItems: couponForm.limitPerItems ? Number(couponForm.limitPerItems) : null,
-      limitPerUser: couponForm.limitPerUser ? Number(couponForm.limitPerUser) : null,
-      specificProducts: couponForm.specificProducts.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean),
-      usedCount: 0,
-      userUses: {},
-      active: true,
+    await runWithTransition(async () => {
+      try {
+        const nextCoupons = await upsertCoupon({
+          code: couponForm.code.toUpperCase(),
+          discountType: couponForm.discountType,
+          discount: Number(couponForm.discount),
+          limitPerCoupon: couponForm.limitPerCoupon ? Number(couponForm.limitPerCoupon) : null,
+          limitPerItems: couponForm.limitPerItems ? Number(couponForm.limitPerItems) : null,
+          limitPerUser: couponForm.limitPerUser ? Number(couponForm.limitPerUser) : null,
+          specificProducts: couponForm.specificProducts.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean),
+          usedCount: 0,
+          userUses: {},
+          active: true,
+        });
+        setCoupons(nextCoupons);
+        setCouponForm(initialCouponForm);
+        setToast("Coupon saved.");
+      } catch (err) {
+        showAlert("Failed to save coupon: " + friendlyApiError(err));
+      }
     });
-    setCoupons(nextCoupons);
-    setCouponForm(initialCouponForm);
-    setToast("Coupon saved.");
   }
 
   async function removeCoupon(code) {
-    const nextCoupons = await deleteCoupon(code);
-    setCoupons(nextCoupons);
-    setToast("Coupon deleted.");
+    if (!requireSuperAdmin("delete a coupon")) return;
+    await runWithTransition(async () => {
+      const nextCoupons = await deleteCoupon(code);
+      setCoupons(nextCoupons);
+      setToast("Coupon deleted.");
+    });
   }
 
   async function refreshOrders() {
@@ -585,30 +1077,388 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   }
 
   async function changeOrderStatus(orderId, status) {
-    await updateOrderStatus(orderId, status);
-    const nextOrders = await fetchAllOrders();
-    setOrders(nextOrders);
-    setToast("Order status updated.");
+    await runWithTransition(async () => {
+      try {
+        await updateOrderStatus(orderId, status);
+        const nextOrders = await fetchAllOrders();
+        setOrders(nextOrders);
+        setToast("Order status updated.");
+      } catch (err) {
+        showAlert("Failed to update order status: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleDeleteOrder(orderId) {
+    if (!requireSuperAdmin("delete an order")) return;
+    await runWithTransition(async () => {
+      try {
+        const nextOrders = await deleteOrder(orderId);
+        setOrders(nextOrders);
+        setToast("Order deleted.");
+      } catch (err) {
+        showAlert("Failed to delete order: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleDeleteUser(userToDelete) {
+    if (!requireSuperAdmin("delete a customer account")) return;
+    await runWithTransition(async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error || !data?.session?.access_token) {
+          throw new Error("Your admin session has expired — please log in again.");
+        }
+        await deleteUserAccount(userToDelete.id, data.session.access_token);
+        const nextUsers = await listProfiles();
+        setUsers(nextUsers);
+        setToast(`Deleted account for ${userToDelete.email}.`);
+      } catch (err) {
+        showAlert("Failed to delete account: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function requireAccessToken() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data?.session?.access_token) {
+      throw new Error("Your admin session has expired — please log in again.");
+    }
+    return data.session.access_token;
+  }
+
+  async function handlePromoteAdmin(user) {
+    await runWithTransition(async () => {
+      try {
+        const token = await requireAccessToken();
+        await updateAdminRole(user.id, "admin", token);
+        await Promise.all([refreshAdmins(), listProfiles().then(setUsers)]);
+        setToast(`${user.email} is now an admin.`);
+      } catch (err) {
+        showAlert("Failed to promote account: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleDemoteAdmin(admin) {
+    await runWithTransition(async () => {
+      try {
+        const token = await requireAccessToken();
+        await updateAdminRole(admin.id, "customer", token);
+        await Promise.all([refreshAdmins(), listProfiles().then(setUsers)]);
+        setToast(`${admin.email} is no longer an admin.`);
+      } catch (err) {
+        showAlert("Failed to demote account: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleDeleteAdmin(admin) {
+    await runWithTransition(async () => {
+      try {
+        const token = await requireAccessToken();
+        await deleteUserAccount(admin.id, token);
+        await Promise.all([refreshAdmins(), listProfiles().then(setUsers)]);
+        setToast(`Deleted admin account for ${admin.email}.`);
+      } catch (err) {
+        showAlert("Failed to delete account: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleCreateAdmin(payload) {
+    await runWithTransition(async () => {
+      try {
+        const token = await requireAccessToken();
+        await createAdmin(payload, token);
+        await Promise.all([refreshAdmins(), listProfiles().then(setUsers)]);
+        setToast(`Created ${payload.role} account for ${payload.email}.`);
+      } catch (err) {
+        showAlert("Failed to create account: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function updateProductStock(id, status, count, { silent = false } = {}) {
+    const product = products.find(p => p.id === id);
+    if (!product) return;
+    const payload = { ...product, stockStatus: status, stockCount: count };
+    await setProducts(await upsertProducts([payload]));
+    if (!silent) setToast("Stock updated.");
+  }
+
+  // Pulls live Dolibarr stock for every linked product, concurrency-capped
+  // so a big catalog doesn't fire hundreds of requests at once (same
+  // pattern as AdminProductMapping's bulk import). Used by the dashboard's
+  // "Synchronize Stocks" quick action, which shows the loader for the
+  // whole run rather than the fixed minimum — see runWithTransition below.
+  async function syncAllStockFromDolibarr() {
+    const linked = products.filter(p => p.dolibarr_id);
+    const CONCURRENCY = 4;
+    let cursor = 0;
+    async function worker() {
+      while (cursor < linked.length) {
+        const p = linked[cursor++];
+        try {
+          const result = await getLiveStock(p.id, p.dolibarr_id);
+          if (result.stock_status !== p.stockStatus || result.stock_count !== p.stockCount) {
+            await updateProductStock(p.id, result.stock_status, result.stock_count, { silent: true });
+          }
+        } catch (err) {
+          console.error("Failed to sync stock for product", p.id, err);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, linked.length) }, worker));
+  }
+
+  async function handleAddBrand(e) {
+    e.preventDefault();
+    if (!newBrand.trim()) return;
+    const nextBrand = { name: newBrand.trim(), category: newBrandCategory };
+
+    if (editingBrand) {
+      const filtered = brands.filter(b => !(b.name === editingBrand.name && b.category === editingBrand.category));
+      if (filtered.some(b => (b.name || b) === nextBrand.name && b.category === nextBrand.category)) {
+        setToast("Brand already assigned to this category.");
+        return;
+      }
+      await runWithTransition(async () => {
+        try {
+          const next = [...filtered, nextBrand];
+          await saveBrands(next);
+          setBrands(next);
+          setNewBrand("");
+          setEditingBrand(null);
+          setToast("Brand updated.");
+        } catch (err) {
+          showAlert("Failed to update brand: " + friendlyApiError(err));
+        }
+      });
+      return;
+    }
+
+    // Check if exactly this combination already exists
+    if (brands.some(b => (b.name || b) === nextBrand.name && b.category === nextBrand.category)) {
+      setToast("Brand already assigned to this category.");
+      return;
+    }
+    await runWithTransition(async () => {
+      try {
+        const next = [...brands, nextBrand];
+        await saveBrands(next);
+        setBrands(next);
+        setNewBrand("");
+        setToast("Brand added.");
+      } catch (err) {
+        showAlert("Failed to add brand: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  function handleEditBrand(brand) {
+    setEditingBrand(brand);
+    setNewBrand(brand.name);
+    setNewBrandCategory(brand.category || "gym-equipment");
+  }
+  
+  async function handleRemoveBrand(brandToRemove) {
+    if (!requireSuperAdmin("delete a brand")) return;
+    if (!(await showConfirm("Delete this brand?"))) return;
+    await runWithTransition(async () => {
+      const previous = brands;
+      // brandToRemove is now an object { name, category }
+      const next = brands.filter(b => b !== brandToRemove && !(b.name === brandToRemove.name && b.category === brandToRemove.category));
+      setBrands(next);
+      try {
+        await saveBrands(next);
+        setToast("Brand removed.");
+      } catch (err) {
+        setBrands(previous);
+        showAlert("Database Error: " + err.message);
+      }
+    });
+  }
+
+  async function handleAddCategory(e) {
+    e.preventDefault();
+    if (!newCategory.trim()) return;
+    await runWithTransition(async () => {
+      try {
+        const next = [...new Set([...customCategories, newCategory.trim()])];
+        await saveCustomCategories(next);
+        setCustomCategories(next);
+        setNewCategory("");
+        setToast("Category added.");
+      } catch (err) {
+        showAlert("Failed to add category: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleRemoveCategory(catToRemove) {
+    if (!requireSuperAdmin("delete a category")) return;
+    if (!(await showConfirm("Delete this category?"))) return;
+    await runWithTransition(async () => {
+      const previous = customCategories;
+      const next = customCategories.filter(c => c !== catToRemove);
+      setCustomCategories(next);
+      try {
+        await saveCustomCategories(next);
+        setToast("Category removed.");
+      } catch (err) {
+        setCustomCategories(previous);
+        showAlert("Database Error: " + err.message);
+      }
+    });
+  }
+  async function handleRemoveClient(indexToRemove) {
+    if (!requireSuperAdmin("delete a client")) return;
+    if (!(await showConfirm("Delete this client?"))) return;
+    await runWithTransition(async () => {
+      const removed = clients[indexToRemove];
+      const next = clients.filter((_, i) => i !== indexToRemove);
+      try {
+        await saveClients(next);
+        setClients(next);
+        if (removed) await deleteStorageObject(removed.image);
+        setToast("Client removed.");
+      } catch (err) {
+        showAlert("Error removing client: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleRemovePartner(indexToRemove) {
+    if (!requireSuperAdmin("delete a partner")) return;
+    if (!(await showConfirm("Delete this partner?"))) return;
+    await runWithTransition(async () => {
+      const removed = partners[indexToRemove];
+      const next = partners.filter((_, i) => i !== indexToRemove);
+      try {
+        await savePartners(next);
+        setPartners(next);
+        if (removed) await deleteStorageObject(removed.image);
+        setToast("Partner removed.");
+      } catch (err) {
+        showAlert("Error removing partner: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleSaveBlog(blogForm, imageFile) {
+    if (!blogForm.title || !blogForm.content) {
+      showAlert("Title and content are required.");
+      return;
+    }
+    await runWithTransition(async () => {
+      try {
+        let imageUrl = blogForm.image;
+        if (imageFile) {
+          imageUrl = await uploadBlobToStorage(imageFile, "webp", "blogs");
+        }
+
+        const newBlog = {
+          id: blogForm.id || Date.now().toString(),
+          title: blogForm.title,
+          image: imageUrl || "",
+          content: blogForm.content,
+          author: blogForm.author || currentUser?.email || "Admin",
+          date: blogForm.date || new Date().toISOString()
+        };
+
+        let next;
+        if (blogForm.id) {
+          next = blogs.map(b => b.id === blogForm.id ? newBlog : b);
+        } else {
+          next = [newBlog, ...blogs];
+        }
+
+        await saveBlogs(next);
+        setBlogs(next);
+        setToast(blogForm.id ? "Blog updated." : "Blog published.");
+      } catch (err) {
+        showAlert("Error saving blog: " + friendlyApiError(err));
+      }
+    });
+  }
+
+  async function handleRemoveBlog(idToRemove) {
+    if (!requireSuperAdmin("delete a blog post")) return;
+    if (!(await showConfirm("Delete this blog post?"))) return;
+    await runWithTransition(async () => {
+      const removed = blogs.find(b => b.id === idToRemove);
+      const next = blogs.filter(b => b.id !== idToRemove);
+      try {
+        await saveBlogs(next);
+        setBlogs(next);
+        if (removed) await deleteStorageObject(removed.image);
+        setToast("Blog removed.");
+      } catch (err) {
+        showAlert("Error removing blog: " + friendlyApiError(err));
+      }
+    });
   }
 
   if (!authed) {
     return (
-      <div className="admin-login-wrap-react">
-        <div className="admin-login-card-react">
-          <div className="admin-login-title">Admin Access</div>
-          <div className="admin-login-sub">This route now uses Supabase Auth plus the `profiles.role = admin` check.</div>
-          <form onSubmit={handleAdminLogin} className="admin-auth-form">
-            <label>
-              <span>Admin Email</span>
-              <input type="email" value={loginForm.email} onChange={(event) => setLoginForm((current) => ({ ...current, email: event.target.value }))} autoFocus />
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #1a1f2e 0%, #0f172a 100%)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        {/* Background pattern */}
+        <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(circle at 20% 30%, rgba(230,57,70,0.08) 0%, transparent 50%), radial-gradient(circle at 80% 70%, rgba(230,57,70,0.06) 0%, transparent 50%)", pointerEvents: "none" }} />
+        <div style={{ width: "100%", maxWidth: 420, margin: "0 auto", padding: "0 24px", position: "relative" }}>
+          {/* Logo */}
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <img src="/logo.png" alt="Sports Way" style={{ height: 48, width: "auto", objectFit: "contain", filter: "brightness(0) invert(1)", display: "inline-block" }} />
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 20, padding: 36, backdropFilter: "blur(12px)", boxShadow: "0 32px 64px rgba(0,0,0,0.5)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 10, background: "linear-gradient(135deg, #e63946, #c1121f)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>Admin Access</div>
+          </div>
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginBottom: 20, marginTop: 4 }}>Restricted area — Sports Way staff only</p>
+          <form onSubmit={handleAdminLogin} style={{ display: "grid", gap: 14 }}>
+            <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              <span>Email</span>
+              <input type="text" value={loginForm.email} onChange={(event) => setLoginForm((current) => ({ ...current, email: event.target.value }))} autoFocus style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "11px 14px", color: "#fff", fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" }} />
             </label>
-            <label>
+            <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
               <span>Password</span>
-              <input type="password" value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} />
+              <div style={{ position: "relative" }}>
+                <input type={showPassword ? "text" : "password"} value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} style={{ width: "100%", paddingRight: "40px", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "11px 14px", paddingRight: 40, color: "#fff", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: "absolute",
+                    right: "10px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    color: "#888",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center"
+                  }}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  ) : (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  )}
+                </button>
+              </div>
             </label>
-            <button className="btn btn-primary" type="submit">Unlock Dashboard</button>
+            <button type="submit" disabled={loginSubmitting} style={{ width: "100%", padding: "12px", background: loginSubmitting ? "rgba(230,57,70,0.5)" : "#e63946", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 15, cursor: loginSubmitting ? "not-allowed" : "pointer", marginTop: 4 }}>
+              {loginSubmitting ? "Checking..." : "Unlock Dashboard →"}
+            </button>
             <button
-              className="btn btn-outline"
               type="button"
               onClick={async () => {
                 try {
@@ -618,437 +1468,373 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
                   setLoginError(error.message || "Unable to send reset email.");
                 }
               }}
+              style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: "10px", color: "rgba(255,255,255,0.5)", fontSize: 13, cursor: "pointer", width: "100%" }}
             >
-              Reset Password
+              Forgot password?
             </button>
           </form>
-          <div className="account-msg error" style={{ minHeight: 20 }}>{loginError}</div>
+          {loginError ? (
+            <div style={{ marginTop: 14, padding: "10px 12px", background: "rgba(230,57,70,0.1)", border: "1px solid rgba(230,57,70,0.3)", borderRadius: 10, color: "#ff8a94", fontSize: 13 }}>
+              {loginError}
+            </div>
+          ) : null}
+          </div>
+          <p style={{ textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: 11, marginTop: 20 }}>
+            Admin accounts are provisioned by a superadmin — there is no self-signup here.
+          </p>
         </div>
+        <BrandLoader visible={loginSubmitting} />
       </div>
     );
   }
 
   return (
-    <div className="admin-shell-react">
-      <aside className="admin-sidebar-react">
-        <div>
-          <div className="admin-brand-react">Sports Way Admin</div>
-          <div className="admin-user-pill">Logged in as {currentUser.email}</div>
-        </div>
-        <nav className="admin-nav-react">
-          {[
-            ["visibility", "Visibility"],
-            ["products", "Products"],
-            ["orders", "Orders"],
-            ["users", "Users"],
-            ["coupons", "Coupons"],
-          ].map(([value, label]) => (
-            <button key={value} className={section === value ? "active" : ""} onClick={() => setSection(value)}>
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="admin-footer-actions">
-          <button className="btn btn-outline" type="button" onClick={undoLastChange}>Undo</button>
-          <button className="btn btn-outline" type="button" onClick={() => signOut()}>Logout</button>
-        </div>
-      </aside>
-
-      <main className="admin-main-react">
-        {toast ? <div className="admin-toast-react">{toast}</div> : null}
+    <AdminShell
+      section={section}
+      onNavigate={goTo}
+      pageTransitioning={pageTransitioning}
+      currentUser={currentUser}
+      signOut={() => runWithTransition(signOut)}
+      undoLastChange={undoLastChange}
+      isSuperAdmin={isSuperAdmin(currentUser?.role)}
+      newOrdersBadge={newOrdersBadge}
+      newUsersBadge={newUsersBadge}
+      unlinkedProductsBadge={unlinkedProductsBadge}
+      toast={toast}
+    >
+        {section === "dashboard" ? (
+          <AdminDashboard
+            orders={orders}
+            users={users}
+            products={products}
+            onNavigate={goTo}
+            onSyncStocks={() => runWithTransition(syncAllStockFromDolibarr, "stocks")}
+            onViewOrder={(orderId) => { setOrderIdToOpen(orderId); goTo("orders"); }}
+          />
+        ) : null}
 
         {section === "visibility" ? (
-          <>
-            <section className="admin-card-react">
-              <div className="admin-card-head">
-                <h2>Category Visibility</h2>
-              </div>
-              <div className="admin-toggle-grid">
-                {adminCategoryToggles.map((item) => (
-                  <label key={item.value} className="admin-toggle-row">
-                    <span>{item.label}</span>
-                    <input
-                      type="checkbox"
-                      checked={!hiddenCategories.includes(item.value)}
-                      onChange={(event) => toggleCategoryVisibility(item.value, event.target.checked)}
-                    />
-                  </label>
-                ))}
-              </div>
-            </section>
-
-            <section className="admin-card-react">
-              <div className="admin-card-head">
-                <h2>Subcategory Visibility</h2>
-              </div>
-              <div className="admin-toggle-grid compact">
-                {adminSubcategoryToggles.map((item) => (
-                  <label key={item} className="admin-toggle-row compact">
-                    <span>{item}</span>
-                    <input
-                      type="checkbox"
-                      checked={!hiddenSubcategories.includes(item)}
-                      onChange={(event) => toggleSubcategoryVisibility(item, event.target.checked)}
-                    />
-                  </label>
-                ))}
-              </div>
-            </section>
-          </>
+          <AdminVisibility
+            hiddenCategories={hiddenCategories}
+            setHiddenCategories={setHiddenCategories}
+            hiddenSubcategories={hiddenSubcategories}
+            setHiddenSubcategories={setHiddenSubcategories}
+            showBrandsFilter={showBrandsFilter}
+            setShowBrandsFilter={setShowBrandsFilter}
+            customCategories={customCategories}
+            saving={savingVisibility}
+            onSave={async () => {
+              setSavingVisibility(true);
+              await runWithTransition(async () => {
+                try {
+                  await saveHiddenCategories(hiddenCategories);
+                  await saveHiddenSubcategories(hiddenSubcategories);
+                  await saveShowBrandsFilter(showBrandsFilter);
+                  setToast('Visibility settings saved.');
+                } catch (err) {
+                  showAlert('Failed to save visibility settings: ' + friendlyApiError(err));
+                }
+              });
+              setSavingVisibility(false);
+            }}
+          />
         ) : null}
 
         {section === "products" ? (
           <>
-            <section className="admin-card-react">
-              <div className="admin-card-head">
-                <h2>Product Management</h2>
-                <div className="admin-inline-actions">
-                  <button className="btn btn-outline" type="button" onClick={optimizeDatabase}>Optimize Inline Images</button>
-                  <button className="btn btn-outline" type="button" onClick={migrateImagesAndSyncToSupabase}>Upload Inline Images</button>
-                </div>
-              </div>
-              <form className="admin-product-form" onSubmit={saveProduct}>
-                <label>
-                  <span>Product Name</span>
-                  <input value={productForm.name} onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))} required />
-                </label>
-                <label>
-                  <span>Base Price</span>
-                  <input type="number" value={productForm.price} onChange={(event) => setProductForm((current) => ({ ...current, price: event.target.value }))} />
-                </label>
-                <label>
-                  <span>Stock Status</span>
-                  <select value={productForm.stockStatus} onChange={(event) => setProductForm((current) => ({ ...current, stockStatus: event.target.value }))}>
-                    <option value="instock">In Stock</option>
-                    <option value="outofstock">Out of Stock</option>
-                    <option value="onbackorder">On Backorder</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Stock Count</span>
-                  <input type="number" value={productForm.stockCount} onChange={(event) => setProductForm((current) => ({ ...current, stockCount: event.target.value }))} />
-                </label>
-                <label>
-                  <span>Badge</span>
-                  <select value={productForm.badge} onChange={(event) => setProductForm((current) => ({ ...current, badge: event.target.value }))}>
-                    {productBadgeOptions.map((option) => <option key={option} value={option}>{option || "None"}</option>)}
-                  </select>
-                </label>
-                <label className="admin-check-inline">
-                  <input type="checkbox" checked={productForm.featured} onChange={(event) => setProductForm((current) => ({ ...current, featured: event.target.checked }))} />
-                  <span>Featured Product</span>
-                </label>
+            {/* Full-page view */}
+            {productMode === "view" && productPageData && (
+              <AdminProductView
+                product={productPageData}
+                onBack={() => setProductMode("list")}
+                onEdit={(p) => { setProductPageData(p); setProductMode("edit"); }}
+                onDelete={(id) => { handleDeleteProduct(id); setProductMode("list"); setProductPageData(null); }}
+              />
+            )}
 
-                <label className="span-2">
-                  <span>Short Description</span>
-                  <textarea rows="3" value={productForm.shortDesc} onChange={(event) => setProductForm((current) => ({ ...current, shortDesc: event.target.value }))} />
-                </label>
-                <label className="span-2">
-                  <span>Detailed Description</span>
-                  <textarea rows="6" value={productForm.description} onChange={(event) => setProductForm((current) => ({ ...current, description: event.target.value }))} />
-                </label>
+            {/* Full-page edit / add */}
+            {productMode === "edit" && (
+              <AdminProductEdit
+                product={productPageData}
+                brands={brands}
+                customCategories={customCategories}
+                savedAttributes={attributes}
+                uploadImage={async (file, field) => {
+                  const prefix = generateSeoPrefix({ name: productPageData?.name || "product", categories: [], brand: "" });
+                  const blob = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(new Blob([Uint8Array.from(atob(r.result.split(",")[1]), c => c.charCodeAt(0))], { type: file.type })); r.readAsDataURL(file); });
+                  return uploadBlobToStorage(blob, file.name.split(".").pop(), "products", prefix);
+                }}
+                onSave={async (product) => {
+                  const existing = products.find((p) => p.id === product.id);
+                  const payload = existing ? { ...existing, ...product } : { ...product, id: Date.now() };
+                  const { upsertProducts } = await import("../lib/storefrontApi");
+                  await setProducts(await upsertProducts([payload]));
+                  setToast(existing ? "Product updated!" : "Product added!");
+                  setProductMode("list");
+                  setProductPageData(null);
+                }}
+                onCancel={() => { setProductMode("list"); setProductPageData(null); }}
+              />
+            )}
 
-                <div className="span-2 admin-image-grid">
-                  <label>
-                    <span>Cover Image URL / Data URL</span>
-                    <input value={productForm.cover} onChange={(event) => setProductForm((current) => ({ ...current, cover: event.target.value }))} />
-                    <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && handleImageFieldChange("cover", event.target.files[0])} />
-                  </label>
-                  <label>
-                    <span>Hover Image URL / Data URL</span>
-                    <input value={productForm.hover} onChange={(event) => setProductForm((current) => ({ ...current, hover: event.target.value }))} />
-                    <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && handleImageFieldChange("hover", event.target.files[0])} />
-                  </label>
-                </div>
-
-                <label className="span-2">
-                  <span>Gallery Images, one per line</span>
-                  <textarea rows="4" value={productForm.galleryText} onChange={(event) => setProductForm((current) => ({ ...current, galleryText: event.target.value }))} />
-                  <input type="file" accept="image/*" multiple onChange={(event) => event.target.files?.length && handleGalleryUpload(Array.from(event.target.files))} />
-                </label>
-
-                <div className="span-2">
-                  <span className="admin-block-label">Categories</span>
-                  <div className="admin-checkbox-panel">
-                    {adminCategoryOptions.map((option) => (
-                      <label key={option.value} className="admin-toggle-row compact">
-                        <input
-                          type="checkbox"
-                          checked={productForm.categories.includes(option.value)}
-                          onChange={(event) => updateCategorySelection(option.value, event.target.checked)}
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="span-2 admin-subpanel">
-                  <div className="admin-card-head">
-                    <h3>Attributes</h3>
-                    <div className="admin-inline-actions">
-                      <button className="btn btn-outline" type="button" onClick={() => addAttributeRow()}>Add Attribute</button>
-                      <button className="btn btn-outline" type="button" onClick={generateVariationsFromAttributes}>Generate Variations</button>
-                    </div>
-                  </div>
-                  {attributes.map((attribute, index) => (
-                    <div key={`${attribute.name}-${index}`} className="admin-row-grid">
-                      <input value={attribute.name} placeholder="Attribute name" onChange={(event) => updateAttribute(index, { name: event.target.value })} />
-                      <input value={attribute.values} placeholder="Values: S, M, L or Red | Blue" onChange={(event) => updateAttribute(index, { values: event.target.value })} />
-                      <button className="btn btn-outline" type="button" onClick={() => removeAttribute(index)}>Remove</button>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="span-2 admin-subpanel">
-                  <div className="admin-card-head">
-                    <h3>Variations</h3>
-                    <button className="btn btn-outline" type="button" onClick={() => addVariationRow()}>Add Variation</button>
-                  </div>
-                  {variations.map((variation, index) => (
-                    <div key={`${variation.label}-${index}`} className="admin-variation-grid">
-                      <input value={variation.label || ""} placeholder="Label" onChange={(event) => updateVariation(index, { label: event.target.value })} />
-                      <input type="number" value={variation.price} placeholder="Price" onChange={(event) => updateVariation(index, { price: event.target.value })} />
-                      <select value={variation.stockStatus} onChange={(event) => updateVariation(index, { stockStatus: event.target.value })}>
-                        <option value="instock">In Stock</option>
-                        <option value="outofstock">Out of Stock</option>
-                        <option value="onbackorder">On Backorder</option>
-                      </select>
-                      <div className="admin-variation-image-cell">
-                        <input value={variation.img || ""} placeholder="Variation image URL" onChange={(event) => updateVariation(index, { img: event.target.value })} />
-                        <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && handleVariationImageUpload(index, event.target.files[0])} />
-                      </div>
-                      <button className="btn btn-outline" type="button" onClick={() => removeVariation(index)}>Remove</button>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="span-2 admin-inline-actions">
-                  <button className="btn btn-primary" type="submit">{productForm.id ? "Update Product" : "Add Product to Catalog"}</button>
-                  <button className="btn btn-outline" type="button" onClick={resetEditor}>Reset</button>
-                  <label className="btn btn-outline admin-file-label">
-                    Import CSV
-                    <input type="file" accept=".csv" onChange={(event) => event.target.files?.[0] && importCsv(event.target.files[0])} hidden />
-                  </label>
-                </div>
-              </form>
-            </section>
-
-            <section className="admin-card-react">
-              <div className="admin-card-head">
-                <h2>Live Inventory</h2>
-                <input className="admin-search" value={search} onChange={(event) => { setSearch(event.target.value); setProductPage(1); }} placeholder="Search products by name, ID, or category..." />
-              </div>
-              <div className="admin-table-wrap">
-                <table className="admin-table-react">
-                  <thead>
-                    <tr>
-                      <th>Image</th>
-                      <th>Product</th>
-                      <th>Stock</th>
-                      <th>Price</th>
-                      <th>Categories</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagedProducts.items.length ? pagedProducts.items.map((product) => (
-                      <tr key={product.id}>
-                        <td><img className="table-img" src={product.img || product.image} alt={product.name} /></td>
-                        <td>
-                          <div className="table-main">{product.name}</div>
-                          <div className="table-sub">ID: {product.id}</div>
-                        </td>
-                        <td>{product.stockStatus || "instock"} {product.stockCount != null ? `(${product.stockCount})` : ""}</td>
-                        <td>{product.variations?.length ? `${Math.min(...product.variations.map((item) => item.price)).toLocaleString()} - ${Math.max(...product.variations.map((item) => item.price)).toLocaleString()}` : Number(product.price || 0).toLocaleString()}</td>
-                        <td>{(product.categories || [product.category]).join(", ")}</td>
-                        <td className="table-actions">
-                          <button onClick={() => editProduct(product.id)}>Edit</button>
-                          <button onClick={() => deleteProduct(product.id)}>Delete</button>
-                        </td>
-                      </tr>
-                    )) : (
-                      <tr><td colSpan="6" className="table-empty">No products match the current filter.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <Pagination state={pagedProducts} currentPage={productPage} onChange={setProductPage} />
-            </section>
+            {/* Product list */}
+            {productMode === "list" && (
+              <AdminProducts
+                products={products}
+                onAddNew={() => { setProductPageData(null); setProductMode("edit"); }}
+                onView={(product) => { setProductPageData(product); setProductMode("view"); }}
+                onEdit={(product) => { setProductPageData(product); setProductMode("edit"); }}
+                onDelete={handleDeleteProduct}
+                onOptimize={optimizeDatabase}
+                onRenameImages={migrateImagesAndSyncToSupabase}
+                onImportCsv={importCsv}
+              />
+            )}
           </>
         ) : null}
 
         {section === "orders" ? (
-          <section className="admin-card-react">
-            <div className="admin-card-head">
-              <h2>Orders</h2>
-              <button className="btn btn-outline" onClick={refreshOrders}>Refresh</button>
-            </div>
-            <div className="admin-table-wrap">
-              <table className="admin-table-react">
-                <thead>
-                  <tr>
-                    <th>Order</th>
-                    <th>Customer</th>
-                    <th>Date</th>
-                    <th>Payment</th>
-                    <th>Total</th>
-                    <th>Status</th>
-                    <th>Items</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedOrders.items.length ? pagedOrders.items.map((order) => (
-                    <tr key={order.id}>
-                      <td className="table-main">{order.id}</td>
-                      <td>
-                        <div className="table-main">{order.customer_name || "—"}</div>
-                        <div className="table-sub">{order.email || ""}</div>
-                        <div className="table-sub">{order.phone || ""}</div>
-                      </td>
-                      <td>{new Date(order.created_at).toLocaleString()}</td>
-                      <td>{order.payment_method || "—"}</td>
-                      <td>{formatPrice(Number(order.total || 0))}</td>
-                      <td>
-                        <select value={order.status || "Processing"} onChange={(event) => changeOrderStatus(order.id, event.target.value)}>
-                          {["Processing", "Paid", "Completed", "Cancelled", "Failed", "Pending Payment"].map((status) => (
-                            <option key={status} value={status}>{status}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>{(order.items || []).map((item) => `${item.name} x ${item.qty || 1}`).join(", ") || "—"}</td>
-                    </tr>
-                  )) : (
-                    <tr><td colSpan="7" className="table-empty">No orders found.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <Pagination state={pagedOrders} currentPage={orderPage} onChange={setOrderPage} />
-          </section>
+          <AdminOrders
+            orders={orders}
+            onStatusChange={changeOrderStatus}
+            onRefresh={refreshOrders}
+            onDelete={handleDeleteOrder}
+            canDelete={isSuperAdmin(currentUser?.role)}
+            getAccessToken={requireAccessToken}
+            openOrderId={orderIdToOpen}
+            onOpenOrderHandled={() => setOrderIdToOpen(null)}
+            newOrderIds={newOrderIds}
+            onOrderSeen={markOrderSeen}
+          />
         ) : null}
 
         {section === "users" ? (
-          <section className="admin-card-react">
-            <div className="admin-card-head">
-              <h2>Registered Users</h2>
-            </div>
-            <div className="admin-table-wrap">
-              <table className="admin-table-react">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Phone</th>
-                    <th>Orders</th>
-                    <th>Created</th>
-                    <th>Last Login</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedUsers.items.length ? pagedUsers.items.map((user) => (
-                    <tr key={user.id || user.email}>
-                      <td>{user.name || "—"}</td>
-                      <td>{user.email || "—"}</td>
-                      <td>{user.phone || "—"}</td>
-                      <td>{userOrderCounts[user.email] || 0}</td>
-                      <td>{user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}</td>
-                      <td>{user.last_login ? new Date(user.last_login).toLocaleString() : "—"}</td>
-                    </tr>
-                  )) : (
-                    <tr><td colSpan="6" className="table-empty">No users found.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <Pagination state={pagedUsers} currentPage={userPage} onChange={setUserPage} />
-          </section>
+          <AdminUsers
+            users={users}
+            userOrderCounts={userOrderCounts}
+            onDelete={handleDeleteUser}
+            canDelete={isSuperAdmin(currentUser?.role)}
+          />
+        ) : null}
+
+        {section === "manage_admins" && isSuperAdmin(currentUser?.role) ? (
+          <AdminManageAdmins
+            admins={admins}
+            users={users}
+            currentUser={currentUser}
+            onPromote={handlePromoteAdmin}
+            onDemote={handleDemoteAdmin}
+            onDelete={handleDeleteAdmin}
+            onCreate={handleCreateAdmin}
+          />
         ) : null}
 
         {section === "coupons" ? (
-          <>
-            <section className="admin-card-react">
-              <div className="admin-card-head">
-                <h2>Manage Coupons</h2>
-              </div>
-              <div className="admin-product-form">
-                <label>
-                  <span>Coupon Code</span>
-                  <input value={couponForm.code} onChange={(event) => setCouponForm((current) => ({ ...current, code: event.target.value.toUpperCase() }))} />
-                </label>
-                <label>
-                  <span>Discount Type</span>
-                  <select value={couponForm.discountType} onChange={(event) => setCouponForm((current) => ({ ...current, discountType: event.target.value }))}>
-                    <option value="percentage">Percentage</option>
-                    <option value="fixed_cart">Fixed Cart</option>
-                    <option value="fixed_product">Fixed Product</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Coupon Amount / %</span>
-                  <input type="number" value={couponForm.discount} onChange={(event) => setCouponForm((current) => ({ ...current, discount: event.target.value }))} />
-                </label>
-                <label>
-                  <span>Usage Limit Per Coupon</span>
-                  <input type="number" value={couponForm.limitPerCoupon} onChange={(event) => setCouponForm((current) => ({ ...current, limitPerCoupon: event.target.value }))} />
-                </label>
-                <label>
-                  <span>Limit Discounted Items</span>
-                  <input type="number" value={couponForm.limitPerItems} onChange={(event) => setCouponForm((current) => ({ ...current, limitPerItems: event.target.value }))} />
-                </label>
-                <label>
-                  <span>Usage Limit Per User</span>
-                  <input type="number" value={couponForm.limitPerUser} onChange={(event) => setCouponForm((current) => ({ ...current, limitPerUser: event.target.value }))} />
-                </label>
-                <label className="span-2">
-                  <span>Specific Products, comma separated</span>
-                  <input value={couponForm.specificProducts} onChange={(event) => setCouponForm((current) => ({ ...current, specificProducts: event.target.value }))} />
-                </label>
-                <div className="span-2 admin-inline-actions">
-                  <button className="btn btn-primary" type="button" onClick={saveCoupon}>Save Coupon</button>
-                </div>
-              </div>
-            </section>
-
-            <section className="admin-card-react">
-              <div className="admin-table-wrap">
-                <table className="admin-table-react">
-                  <thead>
-                    <tr>
-                      <th>Code</th>
-                      <th>Type</th>
-                      <th>Discount</th>
-                      <th>Used</th>
-                      <th>Per Coupon</th>
-                      <th>Per User</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagedCoupons.items.length ? pagedCoupons.items.map((coupon) => (
-                      <tr key={coupon.code}>
-                        <td className="table-main">{coupon.code}</td>
-                        <td>{coupon.discountType}</td>
-                        <td>{coupon.discountType === "percentage" ? `${coupon.discount}%` : formatPrice(Number(coupon.discount || 0))}</td>
-                        <td>{coupon.usedCount || 0}</td>
-                        <td>{coupon.limitPerCoupon ?? "Unlimited"}</td>
-                        <td>{coupon.limitPerUser ?? "Unlimited"}</td>
-                        <td className="table-actions">
-                          <button onClick={() => removeCoupon(coupon.code)}>Delete</button>
-                        </td>
-                      </tr>
-                    )) : (
-                      <tr><td colSpan="7" className="table-empty">No coupons added.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <Pagination state={pagedCoupons} currentPage={couponPage} onChange={setCouponPage} />
-            </section>
-          </>
+          <AdminCoupons
+            coupons={coupons}
+            onSave={saveCoupon}
+            onDelete={removeCoupon}
+          />
         ) : null}
-      </main>
-    </div>
+
+        {(section === "taxonomy" || section === "catalog") ? (
+          <AdminCatalog
+            brands={brands}
+            customCategories={customCategories}
+            onBrandAdd={async (b) => {
+              if (!b.name?.trim()) return;
+              await runWithTransition(async () => {
+                try {
+                  const next = [...brands, { name: b.name.trim(), category: b.category || "gym-equipment" }];
+                  await saveBrands(next);
+                  setBrands(next);
+                  setToast("Brand added.");
+                } catch (err) {
+                  showAlert("Failed to add brand: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onBrandRemove={handleRemoveBrand}
+            onCategoryAdd={async (c) => {
+              if (!c?.trim()) return;
+              await runWithTransition(async () => {
+                try {
+                  const next = [...new Set([...customCategories, c.trim()])];
+                  await saveCustomCategories(next);
+                  setCustomCategories(next);
+                  setToast("Category added.");
+                } catch (err) {
+                  showAlert("Failed to add category: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onCategoryRemove={handleRemoveCategory}
+          />
+        ) : null}
+
+        {section === "stocks" ? (
+          <AdminStocks
+            products={products}
+            onUpdateStock={updateProductStock}
+            onOpenProduct={(product) => {
+              setSection("products");
+              setProductPageData(product);
+              setProductMode("edit");
+            }}
+          />
+        ) : null}
+
+        {section === "categories" ? (
+          <AdminCategories
+            products={products}
+            customCategories={customCategories}
+            onCategoryAdd={async (c) => {
+              if (!c?.trim()) return;
+              await runWithTransition(async () => {
+                try {
+                  const next = [...new Set([...customCategories, c.trim()])];
+                  await saveCustomCategories(next);
+                  setCustomCategories(next);
+                  setToast("Category added.");
+                } catch (err) {
+                  showAlert("Failed to add category: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onCategoryRemove={handleRemoveCategory}
+          />
+        ) : null}
+
+        {section === "brands" ? (
+          <AdminBrands
+            products={products}
+            brands={brands}
+            onBrandAdd={async (b) => {
+              if (!b.name?.trim()) return;
+              await runWithTransition(async () => {
+                try {
+                  const next = [...brands, { name: b.name.trim(), category: b.category || "gym-equipment" }];
+                  await saveBrands(next);
+                  setBrands(next);
+                  setToast("Brand added.");
+                } catch (err) {
+                  showAlert("Failed to add brand: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onBrandRemove={handleRemoveBrand}
+          />
+        ) : null}
+
+        {section === "attributes" ? (
+          <AdminAttributes
+            products={products}
+            attributes={attributes}
+            onAdd={handleAddSavedAttribute}
+            onUpdate={handleUpdateSavedAttribute}
+            onRemove={handleRemoveSavedAttribute}
+          />
+        ) : null}
+
+        {section === "product_mapping" ? (
+          <AdminProductMapping
+            products={products}
+            onImportFromDolibarr={async (newProduct) => {
+              const { upsertProducts } = await import("../lib/storefrontApi");
+              await setProducts(await upsertProducts([newProduct]));
+              setToast(`Imported "${newProduct.name}" from Dolibarr.`);
+            }}
+            onImportManyFromDolibarr={async (newProducts) => {
+              const { upsertProducts } = await import("../lib/storefrontApi");
+              await setProducts(await upsertProducts(newProducts));
+              setToast(`Imported ${newProducts.length} products from Dolibarr.`);
+            }}
+            onLinkProduct={async (siteProduct, doliProduct) => {
+              const payload = {
+                ...siteProduct,
+                dolibarr_id: doliProduct.dolibarr_id,
+                dolibarr_ref: doliProduct.ref,
+                stockStatus: doliProduct.stock_status,
+                stockCount: doliProduct.stock_status === "instock" ? doliProduct.stock_count : 0,
+              };
+              const { upsertProducts } = await import("../lib/storefrontApi");
+              await setProducts(await upsertProducts([payload]));
+              setToast(`Linked "${siteProduct.name}" to Dolibarr ref ${doliProduct.ref}.`);
+            }}
+            onOpenProduct={(product) => {
+              setSection("products");
+              setProductPageData(product);
+              setProductMode("edit");
+            }}
+          />
+        ) : null}
+
+        {section === "clients_partners" ? (
+          <AdminContent
+            clients={clients}
+            onAddClient={async (name, file) => {
+              await runWithTransition(async () => {
+                try {
+                  const url = await uploadBlobToStorage(file, file.name.split('.').pop(), 'clients', name || 'client');
+                  const next = [...clients, { name, image: url }];
+                  await saveClients(next);
+                  setClients(next);
+                  setToast('Client added.');
+                } catch (err) {
+                  showAlert("Failed to add client: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onRemoveClient={handleRemoveClient}
+            partners={partners}
+            onAddPartner={async (name, file) => {
+              await runWithTransition(async () => {
+                try {
+                  const url = await uploadBlobToStorage(file, file.name.split('.').pop(), 'partners', name || 'partner');
+                  const next = [...partners, { name, image: url }];
+                  await savePartners(next);
+                  setPartners(next);
+                  setToast('Partner added.');
+                } catch (err) {
+                  showAlert("Failed to add partner: " + friendlyApiError(err));
+                }
+              });
+            }}
+            onRemovePartner={handleRemovePartner}
+          />
+        ) : null}
+
+        {section === "blogs" && blogMode === "list" && (
+          <AdminBlogList
+            blogs={blogs}
+            onAddNew={() => { setBlogPageData(null); setBlogMode("edit"); }}
+            onView={(post) => { setBlogPageData(post); setBlogMode("view"); }}
+            onEdit={(post) => { setBlogPageData(post); setBlogMode("edit"); }}
+            onDelete={handleRemoveBlog}
+          />
+        )}
+
+        {section === "blogs" && blogMode === "view" && (
+          <AdminBlogView
+            post={blogPageData}
+            onBack={() => { setBlogMode("list"); setBlogPageData(null); }}
+            onEdit={(post) => { setBlogPageData(post); setBlogMode("edit"); }}
+          />
+        )}
+
+        {section === "blogs" && blogMode === "edit" && (
+          <AdminBlogEditor
+            post={blogPageData}
+            currentUser={currentUser}
+            onCancel={() => { setBlogMode("list"); setBlogPageData(null); }}
+            onSave={async (form, imageFile) => {
+              await handleSaveBlog(form, imageFile);
+              setBlogMode("list");
+              setBlogPageData(null);
+            }}
+          />
+        )}
+    </AdminShell>
   );
 }
 
@@ -1069,3 +1855,4 @@ function Pagination({ state, currentPage, onChange }) {
     </div>
   );
 }
+

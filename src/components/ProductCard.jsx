@@ -1,15 +1,24 @@
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { formatPrice } from "../lib/format";
 import { isOutOfStock } from "../lib/storefront";
+import { useLiveStock } from "../hooks/useLiveStock";
 
-export function ProductCard({ product, addToCart, toggleWishlist, wishlist }) {
+export function ProductCard({ product: baseProduct, addToCart, toggleWishlist, wishlist }) {
+  const navigate = useNavigate();
+  const product = useLiveStock(baseProduct);
   const outOfStock = isOutOfStock(product);
+  const [adding, setAdding] = useState(false);
+  const [wishing, setWishing] = useState(false);
   const priceLabel = product.variations?.length
     ? `${formatPrice(Math.min(...product.variations.map((item) => item.price)))} - ${formatPrice(Math.max(...product.variations.map((item) => item.price)))}`
     : formatPrice(product.price);
+  
+  const productUrl = `/products/${product.slug || product.id}`;
 
   return (
     <div className="pcard">
-      <div className="pcard-img" onClick={() => { window.location.href = `product.html?id=${product.id}`; }}>
+      <div className="pcard-img" onClick={() => navigate(productUrl)}>
         {product.badge ? (
           <span className={`pcard-badge ${outOfStock ? "sold-out" : ""}`}>
             {outOfStock ? "out of stock" : product.badge}
@@ -18,29 +27,31 @@ export function ProductCard({ product, addToCart, toggleWishlist, wishlist }) {
         <button
           className="pcard-wish"
           aria-label="Wishlist"
-          onClick={(event) => {
+          disabled={wishing}
+          style={{ opacity: wishing ? 0.5 : 1, cursor: wishing ? "wait" : "pointer" }}
+          onClick={async (event) => {
             event.stopPropagation();
-            toggleWishlist(product.id);
+            setWishing(true);
+            try {
+              await toggleWishlist(product.id);
+            } finally {
+              setWishing(false);
+            }
           }}
         >
           {wishlist.includes(product.id) ? "\u2665" : "\u2661"}
         </button>
-        <img src={product.img || product.image} alt={product.name} className="img-main" loading="lazy" />
-        {product.imgHover ? <img src={product.imgHover} alt={product.name} className="img-hover" loading="lazy" /> : null}
+        <img src={product.img || product.image || undefined} alt={`${product.name} - Premium Gym & Sports Equipment in Qatar`} className="img-main" loading="lazy" decoding="async" />
+        {product.imgHover ? <img src={product.imgHover} alt={`${product.name} - Best Fitness Gear in Qatar`} className="img-hover" loading="lazy" decoding="async" /> : null}
       </div>
       <div className="pcard-body">
-        <a href={`product.html?id=${product.id}`} className="pcard-cat">
+        <Link to={productUrl} className="pcard-cat">
           {product.category.replace("-", " ")}
-        </a>
-        <a href={`product.html?id=${product.id}`} className="pcard-name">
+        </Link>
+        <Link to={productUrl} className="pcard-name">
           {product.name}
-        </a>
-        <div className="pcard-category-details">
-          {(product.categories || [product.category])
-            .filter(Boolean)
-            .map((item) => item.replace("-", " "))
-            .join(", ")}
-        </div>
+        </Link>
+
         <div className="pcard-footer">
           <div>
             <span className="pcard-price">{priceLabel}</span>
@@ -50,11 +61,19 @@ export function ProductCard({ product, addToCart, toggleWishlist, wishlist }) {
           </div>
           <button
             className="pcard-add"
-            onClick={() => addToCart(product)}
-            disabled={outOfStock}
+            onClick={async () => {
+              setAdding(true);
+              try {
+                await addToCart(product);
+              } finally {
+                setAdding(false);
+              }
+            }}
+            disabled={outOfStock || adding}
+            style={{ opacity: adding ? 0.6 : 1, cursor: adding ? "wait" : undefined }}
             title={outOfStock ? "Out of stock" : "Add to cart"}
           >
-            +
+            {adding ? "…" : "+"}
           </button>
         </div>
       </div>

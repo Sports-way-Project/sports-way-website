@@ -49,7 +49,6 @@ export const adminCategoryOptions = [
   { label: "Selectorized", value: "selectorized" },
   { label: "Plate Loaded", value: "plate-loaded" },
   { label: "Cable Motion", value: "cable-motion" },
-  { label: "Power Rack", value: "power-rack" },
   { label: "Multi Stations", value: "multi-stations" },
   { label: "Racks & Benches", value: "racks-benches" },
   { label: "Racks", value: "racks" },

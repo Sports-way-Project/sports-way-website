@@ -7,9 +7,13 @@ export function useMasterProducts() {
   useEffect(() => {
     let active = true;
     const refresh = async () => {
-      const nextProducts = await fetchProducts();
-      if (active) {
-        setProductsState(nextProducts);
+      try {
+        const nextProducts = await fetchProducts();
+        if (active) {
+          setProductsState(nextProducts);
+        }
+      } catch (e) {
+        console.error("Failed to fetch products:", e);
       }
     };
 
@@ -20,11 +24,31 @@ export function useMasterProducts() {
   }, []);
 
   const setProducts = async (nextProducts) => {
-    setProductsState(nextProducts);
-    const syncedProducts = await upsertProducts(nextProducts);
-    setProductsState(syncedProducts);
-    return syncedProducts;
+    const previousProducts = products;
+    setProductsState(nextProducts); // Optimistic update
+    try {
+      const syncedProducts = await upsertProducts(nextProducts);
+      setProductsState(syncedProducts);
+      return syncedProducts;
+    } catch (e) {
+      setProductsState(previousProducts); // Revert on failure
+      throw e;
+    }
   };
 
-  return { products, setProducts };
+  const deleteProduct = async (id) => {
+    const previousProducts = products;
+    setProductsState((current) => current.filter((p) => p.id !== id)); // Optimistic delete
+    try {
+      const { deleteProductRecord } = await import("../lib/storefrontApi");
+      const syncedProducts = await deleteProductRecord(id);
+      setProductsState(syncedProducts);
+      return syncedProducts;
+    } catch (e) {
+      setProductsState(previousProducts); // Revert on failure
+      throw e;
+    }
+  };
+
+  return { products, setProducts, deleteProduct };
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { SEO } from "../components/SEO";
 import { CategorySection } from "../components/CategorySection";
 import { FeaturedSection } from "../components/FeaturedSection";
 import { HeroSection } from "../components/HeroSection";
@@ -25,7 +26,7 @@ export function HomePage({ addToCart, toggleWishlist, wishlist }) {
   const [contactSubmitted, setContactSubmitted] = useState(false);
 
   const productCount = useCountUp(1000);
-  const customerCount = useCountUp(10000);
+  const customerCount = useCountUp(5000);
   const experienceCount = useCountUp(6);
   const {
     activeFilter,
@@ -39,7 +40,8 @@ export function HomePage({ addToCart, toggleWishlist, wishlist }) {
   useAutoSlide(setCurrentSlide, heroSlides.length);
 
   return (
-    <>
+        <>
+      <SEO />
       <HeroSection
         currentSlide={currentSlide}
         customerCount={customerCount}
@@ -88,3 +90,4 @@ export function HomePage({ addToCart, toggleWishlist, wishlist }) {
     </>
   );
 }
+

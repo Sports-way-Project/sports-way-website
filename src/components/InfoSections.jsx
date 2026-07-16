@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { SectionHeader } from "./SectionHeader";
 
 export function WhyUsSection({ features }) {
@@ -27,7 +29,6 @@ export function TestimonialsSection({ testimonials }) {
         <div className="testimonial-grid">
           {testimonials.map((testimonial) => (
             <div key={testimonial.name} className={`testimonial-card ${testimonial.featured ? "featured-review" : ""}`}>
-              <div className="stars">\u2605\u2605\u2605\u2605\u2605</div>
               <p>"{testimonial.quote}"</p>
               <div className="reviewer">
                 <div className="reviewer-avatar">{testimonial.avatar}</div>
@@ -45,6 +46,23 @@ export function TestimonialsSection({ testimonials }) {
 }
 
 export function CtaSection({ ctaSubmitted, onSubmit }) {
+  const navigate = useNavigate();
+  const emailRef = useRef(null);
+
+  const handleCtaSubmit = (event) => {
+    event.preventDefault();
+    const email = emailRef.current?.value?.trim() || "";
+
+    // Store the discount flag + email for use on register & checkout
+    localStorage.setItem("firstOrderDiscount", "true");
+    if (email) localStorage.setItem("ctaEmail", email);
+
+    // Navigate to account page — register side — with email pre-filled
+    navigate(`/my-account?register=1&email=${encodeURIComponent(email)}`);
+
+    if (onSubmit) onSubmit(event);
+  };
+
   return (
     <section className="cta-banner" id="cta">
       <div className="cta-content">
@@ -52,8 +70,8 @@ export function CtaSection({ ctaSubmitted, onSubmit }) {
         <p>
           Sign up today and get <strong>10% off</strong> your first order + free shipping.
         </p>
-        <form className="cta-form" onSubmit={onSubmit}>
-          <input type="email" placeholder="Enter your email address" required />
+        <form className="cta-form" onSubmit={handleCtaSubmit}>
+          <input ref={emailRef} type="email" placeholder="Enter your email address" required />
           <button type="submit" className="btn btn-primary">
             Get 10% Off
           </button>
@@ -63,6 +81,7 @@ export function CtaSection({ ctaSubmitted, onSubmit }) {
     </section>
   );
 }
+
 
 export function ContactSection({ contactSubmitted, contacts, onSubmit }) {
   return (
@@ -84,13 +103,19 @@ export function ContactSection({ contactSubmitted, contacts, onSubmit }) {
             ))}
           </div>
 
-          <form className="contact-form" onSubmit={onSubmit}>
+          <form className="contact-form" onSubmit={(event) => {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            const body = `Name: ${formData.get('name')}\nEmail: ${formData.get('email')}\n\n${formData.get('message')}`;
+            window.location.href = `mailto:sales@sportsway.com?subject=${encodeURIComponent(formData.get('subject') || 'Contact Form')}&body=${encodeURIComponent(body)}`;
+            if(onSubmit) onSubmit(event);
+          }}>
             <div className="form-row">
-              <input type="text" placeholder="Your Name" required />
-              <input type="email" placeholder="Email Address" required />
+              <input type="text" name="name" placeholder="Your Name" required />
+              <input type="email" name="email" placeholder="Email Address" required />
             </div>
-            <input type="text" placeholder="Subject" />
-            <textarea rows="5" placeholder="Your message..." required />
+            <input type="text" name="subject" placeholder="Subject" />
+            <textarea name="message" rows="5" placeholder="Your message..." required />
             <button type="submit" className="btn btn-primary">
               Send Message
             </button>

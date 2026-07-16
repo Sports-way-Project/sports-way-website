@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { SectionHeader } from "./SectionHeader";
 import { formatPrice } from "../lib/format";
 
@@ -49,9 +50,9 @@ export function FeaturedSection({
               </div>
               <div className="product-info">
                 <div className="product-category-tag">{product.category}</div>
-                <a href={`product.html?id=${product.id}`} className="product-name">
+                <Link to={`/products/${product.slug || product.id}`} className="product-name">
                   {product.name}
-                </a>
+                </Link>
                 <div className="product-category-details">{product.category.replace("-", " ")}</div>
                 <div className="product-price-row">
                   <div>

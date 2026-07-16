@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/sitemap.xml",
+      "destination": "https://lxmqhiookungmzpdqktm.supabase.co/storage/v1/object/public/product-images/sitemap.xml"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

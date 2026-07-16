@@ -4,6 +4,8 @@ import { fetchVisibilitySettings } from "../lib/storefrontApi";
 export function useVisibilitySettings() {
   const [hiddenCategories, setHiddenCategories] = useState([]);
   const [hiddenSubcategories, setHiddenSubcategories] = useState([]);
+  const [showBrandsFilter, setShowBrandsFilter] = useState(true);
+  const [brands, setBrands] = useState([]);
 
   useEffect(() => {
     let active = true;
@@ -16,6 +18,8 @@ export function useVisibilitySettings() {
 
       setHiddenCategories(nextSettings.hiddenCategories);
       setHiddenSubcategories(nextSettings.hiddenSubcategories);
+      setShowBrandsFilter(nextSettings.showBrandsFilter);
+      setBrands(nextSettings.brands);
     };
 
     refresh();
@@ -24,5 +28,5 @@ export function useVisibilitySettings() {
     };
   }, []);
 
-  return { hiddenCategories, hiddenSubcategories };
+  return { hiddenCategories, hiddenSubcategories, showBrandsFilter, brands };
 }

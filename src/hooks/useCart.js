@@ -13,7 +13,8 @@ export function useCart(sessionUser) {
     const refresh = async () => {
       if (!userId) {
         if (active) {
-          setCartState([]);
+          const local = localStorage.getItem("guest_cart");
+          setCartState(local ? JSON.parse(local) : []);
         }
         return;
       }
@@ -39,12 +40,7 @@ export function useCart(sessionUser) {
     [cart],
   );
 
-  const addToCart = async (product, qty = 1, variation = null) => {
-    if (!userId) {
-      window.alert("Unable to add to cart right now. Please refresh and try again.");
-      return;
-    }
-
+  const addToCart = async (product, qty = 1, variation = null, openCart = true) => {
     const nextItem = buildCartItem(product, qty, variation);
     const existing = cart.find((item) => item.cartId === nextItem.cartId);
     const mergedItem = existing ? { ...existing, qty: existing.qty + qty } : nextItem;
@@ -52,37 +48,70 @@ export function useCart(sessionUser) {
       ? cart.map((item) => item.cartId === nextItem.cartId ? mergedItem : item)
       : [...cart, mergedItem];
 
+    const previous = cart;
     setCartState(nextCart);
-    await upsertCartItem(userId, mergedItem);
-    setCartOpen(true);
+    if (openCart) setCartOpen(true);
+
+    if (!userId) {
+      localStorage.setItem("guest_cart", JSON.stringify(nextCart));
+      return;
+    }
+
+    try {
+      await upsertCartItem(userId, mergedItem);
+    } catch (error) {
+      console.error("Failed to add to cart:", error);
+      setCartState(previous);
+    }
   };
 
   const changeQty = async (cartId, delta) => {
     const item = cart.find((entry) => entry.cartId === cartId);
-    if (!item || !userId) {
-      return;
-    }
+    if (!item) return;
+    const previous = cart;
 
     const nextQty = item.qty + delta;
     if (nextQty <= 0) {
-      setCartState((current) => current.filter((entry) => entry.cartId !== cartId));
-      await removeCartItem(userId, cartId);
+      const nextCart = cart.filter((entry) => entry.cartId !== cartId);
+      setCartState(nextCart);
+      if (!userId) {
+        localStorage.setItem("guest_cart", JSON.stringify(nextCart));
+        return;
+      }
+      try {
+        await removeCartItem(userId, cartId);
+      } catch (error) {
+        console.error("Failed to remove cart item:", error);
+        setCartState(previous);
+      }
       return;
     }
 
     const nextItem = { ...item, qty: nextQty };
-    setCartState((current) => current.map((entry) => entry.cartId === cartId ? nextItem : entry));
-    await upsertCartItem(userId, nextItem);
+    const nextCart = cart.map((entry) => entry.cartId === cartId ? nextItem : entry);
+    setCartState(nextCart);
+
+    if (!userId) {
+      localStorage.setItem("guest_cart", JSON.stringify(nextCart));
+      return;
+    }
+    try {
+      await upsertCartItem(userId, nextItem);
+    } catch (error) {
+      console.error("Failed to update cart quantity:", error);
+      setCartState(previous);
+    }
   };
 
   const setCart = async (nextCart) => {
+    const normalized = Array.isArray(nextCart) ? nextCart : [];
+    setCartState(normalized);
+    
     if (!userId) {
-      setCartState(Array.isArray(nextCart) ? nextCart : []);
+      localStorage.setItem("guest_cart", JSON.stringify(normalized));
       return;
     }
 
-    const normalized = Array.isArray(nextCart) ? nextCart : [];
-    setCartState(normalized);
     if (normalized.length) {
       await replaceCart(userId, normalized);
     } else {

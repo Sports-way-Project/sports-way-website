@@ -89,6 +89,19 @@ export async function deleteUserAccount(userId, accessToken) {
   return res.json();
 }
 
+// Superadmin-only — returns the backend's current .env Dolibarr values, used
+// to pre-fill AdminIntegrationSettings instead of leaving it blank.
+export async function fetchIntegrationDefaults(accessToken) {
+  const res = await fetch(`${FASTAPI_URL}/admin/integration-settings/defaults`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`FastAPI ${res.status}: ${body || res.statusText}`);
+  }
+  return res.json();
+}
+
 // Superadmin-only — see backend/app/routers/admin.py's _require_superadmin.
 export async function listAdmins(accessToken) {
   const res = await fetch(`${FASTAPI_URL}/admin/admins`, {

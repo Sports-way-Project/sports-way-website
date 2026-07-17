@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { showAlert } from "../../lib/dialog.jsx";
+import { friendlyApiError } from "../../lib/apiError";
 
 const STEPS = [
   { id: 1, label: "Website Info", desc: "Name, SEO & Images" },
@@ -183,9 +185,14 @@ export function ProductWizard({ initialData = null, brands = [], customCategorie
 
   async function handleImageField(field, file) {
     if (!uploadImage) return;
-    const url = await uploadImage(file, field);
-    if (field === "cover") setInfo((i) => ({ ...i, cover: url }));
-    if (field === "hover") setInfo((i) => ({ ...i, hover: url }));
+    try {
+      const url = await uploadImage(file, field);
+      if (!url) return; // upload failed — uploadImage already alerted the error
+      if (field === "cover") setInfo((i) => ({ ...i, cover: url }));
+      if (field === "hover") setInfo((i) => ({ ...i, hover: url }));
+    } catch (err) {
+      showAlert("Failed to upload image: " + friendlyApiError(err));
+    }
   }
 
   const canNext = step === 1 ? info.name.trim().length > 0 : true;

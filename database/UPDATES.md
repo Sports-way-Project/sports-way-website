@@ -161,6 +161,30 @@ state but silently dropped when writing to Supabase.
 
 ---
 
+## Migration 013 — `seen` flag on orders (2026-07-17)
+
+**File:** `migrations/013_order_seen_flag.sql`
+
+**Status:** ⏳ Pending — needs to be applied
+
+**What it does:** Adds `seen boolean NOT NULL DEFAULT false` to `public.orders`.
+
+**Why:** The admin panel's "new order" badge/sound/highlight only ever relied on an in-memory Set (wiped on every page reload) plus one blanket "last viewed orders" localStorage timestamp that only updated on navigating into the Orders section — not when an admin actually opened a specific order. After being away and reloading, already-opened orders got re-flagged as new. This makes "seen" a real per-order fact in the database, set the moment the order's modal is opened, instead of a client-side heuristic.
+
+**Code changes applied alongside:** `storefrontApi.js` (`markOrderSeen`, `mapOrderFromRow` includes `seen`), `AdminPage.jsx` (badge/highlight now derived directly from `orders.filter(o => !o.seen)` instead of the old Set/localStorage logic), `AdminOrders.jsx`/`AdminDashboard.jsx` (mark seen on open).
+
+---
+
+## Product slug bug fix + SEO meta defaults (2026-07-17, no migration needed)
+
+**No new columns.** Meta title/description are derived on the fly from existing `name`/`short_desc`/`description` (see `effectiveMetaTitle`/`effectiveMetaDescription` in `lib/format.js`) rather than stored separately — a `meta_title`/`meta_description` migration was drafted and then deliberately dropped in favor of this simpler approach.
+
+**Real bug fixed:** `mapProductToRow` in `storefrontApi.js` never included `slug` in its payload, so every product save silently dropped the slug — meaning product URLs were falling back to the raw numeric id (`/products/12345`) instead of an SEO-friendly slug for effectively every product. Fixed, with auto-generated slugs now suffixed with the product id to avoid unique-constraint collisions now that slug is actually being persisted.
+
+**Code changes:** `storefrontApi.js` (`mapProductToRow` now sends `slug`), `lib/format.js` (`effectiveMetaTitle`/`effectiveMetaDescription` helpers), `AdminProductEdit.jsx`/`AdminPage.jsx` (id-suffixed auto-slug), `ProductPage.jsx` (`<SEO>` uses the derived title/description).
+
+---
+
 ## Future migrations (not yet needed)
 
 ### 009 — `payments` table

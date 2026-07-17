@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { ProductCard } from "../components/ProductCard";
 import { SEO } from "../components/SEO";
-import { formatPrice } from "../lib/format";
+import { formatPrice, effectiveMetaTitle, effectiveMetaDescription } from "../lib/format";
 import { useLiveStock } from "../hooks/useLiveStock";
 import { getProductCategories, isOutOfStock, sortByPriority } from "../lib/storefront";
 
@@ -171,9 +171,9 @@ export function ProductPage({ products, addToCart, toggleWishlist, wishlist }) {
 
   return (
     <div className="product-page">
-      <SEO 
-        title={`${product.name} | Buy in Qatar | Sports Way`}
-        description={product.description || `${product.name} in ${categories.join(", ")}. Shop premium sports equipment at Sports Way Qatar. Best prices, fast delivery.`}
+      <SEO
+        title={`${effectiveMetaTitle(product)} | Buy in Qatar | Sports Way`}
+        description={effectiveMetaDescription(product) || `${product.name} in ${categories.join(", ")}. Shop premium sports equipment at Sports Way Qatar. Best prices, fast delivery.`}
         image={mainImage || "https://www.sports-way.com/logo.png"}
         url={productUrl}
         product={product}

@@ -153,6 +153,7 @@ export function AdminDashboard({ orders, users, products, onNavigate, onSyncStoc
                 style={{ cursor: "pointer" }}
                 className="flex items-center gap-4 px-6 py-3.5 hover:bg-slate-50/60 transition-colors"
               >
+                {!o.seen && <span className="w-2 h-2 rounded-full bg-blue-600 flex-shrink-0" title="Not yet viewed" />}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-slate-800 truncate">{o.customer_name || o.email || "—"}</p>
                   <p className="text-[11px] text-slate-400">{o.order_id} · {new Date(o.created_at).toLocaleDateString()}</p>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   adminCategoryOptions,
   adminCategoryToggles,
@@ -24,6 +25,8 @@ import { ProductWizard } from "../components/admin/ProductWizard";
 import { AdminBlogList } from "../components/admin/AdminBlogList";
 import { AdminBlogView } from "../components/admin/AdminBlogView";
 import { AdminBlogEditor } from "../components/admin/AdminBlogEditor";
+import { AdminIntegrationSettings } from "../components/admin/AdminIntegrationSettings";
+import { AdminProductBulkCsv } from "../components/admin/AdminProductBulkCsv";
 import { AdminShell } from "../components/admin/AdminShell";
 import { AdminDashboard } from "../components/admin/AdminDashboard";
 import { AdminProducts } from "../components/admin/AdminProducts";
@@ -67,6 +70,9 @@ import {
   savePartners,
   fetchBlogs,
   saveBlogs,
+  fetchIntegrationSettings,
+  saveIntegrationSettings,
+  markOrderSeen as markOrderSeenApi,
   upsertProducts,
   deleteStorageObject,
   deleteStorageObjects,
@@ -121,19 +127,6 @@ function readFileAsDataUrl(file) {
   });
 }
 
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 2) {
-    return [];
-  }
-
-  const headers = lines[0].split(",").map((value) => value.trim().toLowerCase());
-  return lines.slice(1).map((line) => {
-    const cells = line.split(",").map((value) => value.trim());
-    return headers.reduce((record, header, index) => ({ ...record, [header]: cells[index] || "" }), {});
-  });
-}
-
 function cartesian(arrays) {
   return arrays.reduce(
     (accumulator, current) => accumulator.flatMap((existing) => current.map((value) => [...existing, value])),
@@ -148,23 +141,6 @@ function dataUrlToBlob(dataUrl) {
   const binary = window.atob(body);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new Blob([bytes], { type: mime });
-}
-
-async function compressImage(dataUrl, maxWidth = 800, quality = 0.7) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => {
-      const scale = Math.min(1, maxWidth / image.width);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(image.width * scale);
-      canvas.height = Math.round(image.height * scale);
-      const context = canvas.getContext("2d");
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL("image/webp", quality));
-    };
-    image.onerror = reject;
-    image.src = dataUrl;
-  });
 }
 
 function paginate(items, page) {
@@ -185,8 +161,12 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [productWizardOpen, setProductWizardOpen] = useState(false);
   const [wizardInitialData, setWizardInitialData] = useState(null);
-  const [productMode, setProductMode] = useState("list"); // "list" | "view" | "edit"
+  const [productMode, setProductMode] = useState("list"); // "list" | "view" | "edit" | "bulk_csv"
   const [productPageData, setProductPageData] = useState(null);
+  const [bulkCsvIds, setBulkCsvIds] = useState([]);
+  const [bulkCsvPresetFile, setBulkCsvPresetFile] = useState(null);
+  const [seoRenameProgress, setSeoRenameProgress] = useState(null); // null | { done, total }
+  const seoRenameCancelRef = useRef(false);
   const [blogMode, setBlogMode] = useState("list"); // "list" | "view" | "edit"
   const [blogPageData, setBlogPageData] = useState(null);
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
@@ -206,6 +186,10 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [hiddenSubcategories, setHiddenSubcategories] = useState([]);
   const [showBrandsFilter, setShowBrandsFilter] = useState(true);
   const [orders, setOrders] = useState([]);
+  // Tracks previously-seen order ids purely to detect genuinely new arrivals
+  // for the poll-fallback sound trigger (see the 20s interval below) — the
+  // "new order" badge/highlight itself is derived straight from each order's
+  // persisted `seen` column (migration 013), not from this ref.
   const knownOrderIdsRef = useRef(null);
   const [users, setUsers] = useState([]);
   const [admins, setAdmins] = useState([]);
@@ -216,6 +200,9 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [clients, setClients] = useState([]);
   const [partners, setPartners] = useState([]);
   const [blogs, setBlogs] = useState([]);
+  const [integrationSettings, setIntegrationSettings] = useState({
+    fastapiUrl: "", dolibarrApiUrl: "", dolibarrApiKey: "", dolibarrSyncSecret: "",
+  });
 
   const [newBrand, setNewBrand] = useState("");
   const [newBrandCategory, setNewBrandCategory] = useState("gym-equipment");
@@ -224,27 +211,30 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [toast, setToast] = useState("");
   const [savingVisibility, setSavingVisibility] = useState(false);
   const [newUsersBadge, setNewUsersBadge] = useState(0);
-  const [newOrdersBadge, setNewOrdersBadge] = useState(0);
-  // Per-order "unseen" tracking for the blue row highlight in AdminOrders —
-  // separate from newOrdersBadge (a plain count), this is the actual set of
-  // order ids to highlight, cleared one at a time as each is opened.
-  const [newOrderIds, setNewOrderIds] = useState(() => new Set());
-  function markOrderSeen(orderId) {
-    setNewOrderIds((prev) => {
-      if (!prev.has(orderId)) return prev;
-      const next = new Set(prev);
-      next.delete(orderId);
-      return next;
-    });
+  // Derived straight from each order's persisted `seen` column — a real,
+  // durable per-order fact instead of the old in-memory Set + blanket
+  // last-viewed-timestamp, which reset on every page reload and caused
+  // already-opened orders to get re-flagged as new.
+  const newOrdersBadge = useMemo(() => orders.filter((o) => !o.seen).length, [orders]);
+
+  async function markOrderSeen(orderId) {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order || order.seen) return;
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, seen: true } : o)));
+    try {
+      await markOrderSeenApi(orderId);
+    } catch (err) {
+      console.error("Failed to persist order seen state:", err);
+    }
   }
+
   const authed = isAdmin(currentUser?.role);
 
   const { pageTransitioning, navigate, runWithTransition } = useAdminPageTransition(
     (id) => { setSection(id); setProductMode("list"); setProductPageData(null); setBlogMode("list"); setBlogPageData(null); },
     {
       onBadgeClear: (id) => {
-        if (id === "orders") { setNewOrdersBadge(0); localStorage.setItem("adminLastViewedOrders", new Date().toISOString()); }
-        if (id === "users")  { setNewUsersBadge(0);  localStorage.setItem("adminLastViewedUsers",  new Date().toISOString()); }
+        if (id === "users") { setNewUsersBadge(0); localStorage.setItem("adminLastViewedUsers", new Date().toISOString()); }
       },
     },
   );
@@ -291,7 +281,7 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     let active = true;
 
     const load = async () => {
-      const [visibility, nextAttributes, nextOrders, nextUsers, nextCoupons, nextBrands, nextCats, nextClients, nextPartners, nextBlogs] = await Promise.all([
+      const [visibility, nextAttributes, nextOrders, nextUsers, nextCoupons, nextBrands, nextCats, nextClients, nextPartners, nextBlogs, nextIntegrationSettings] = await Promise.all([
         fetchVisibilitySettings(),
         fetchSavedAttributes(),
         fetchAllOrders(),
@@ -302,6 +292,7 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
         fetchClients(),
         fetchPartners(),
         fetchBlogs(),
+        fetchIntegrationSettings(),
       ]);
 
       if (!active) {
@@ -320,17 +311,13 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       setClients(nextClients);
       setPartners(nextPartners);
       setBlogs(nextBlogs);
+      setIntegrationSettings(nextIntegrationSettings);
 
-      // Calculate offline missed badges
-      const lastViewedOrders = localStorage.getItem("adminLastViewedOrders") || 0;
+      // Users still use the old blanket last-viewed-timestamp heuristic —
+      // only orders got the real per-row `seen` column (migration 013).
       const lastViewedUsers = localStorage.getItem("adminLastViewedUsers") || 0;
-      
-      const missedOrderRows = nextOrders.filter(o => new Date(o.created_at).getTime() > new Date(lastViewedOrders).getTime());
       const missedUsers = nextUsers.filter(u => new Date(u.created_at).getTime() > new Date(lastViewedUsers).getTime()).length;
-
-      setNewOrdersBadge(missedOrderRows.length);
       setNewUsersBadge(missedUsers);
-      setNewOrderIds(new Set(missedOrderRows.map((o) => o.id)));
       knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
     };
 
@@ -342,10 +329,14 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   }, [authed]);
 
   async function refreshAdmins() {
-    const { data } = await supabase.auth.getSession();
-    const token = data?.session?.access_token;
-    if (!token) return;
-    setAdmins(await listAdmins(token));
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) return;
+      setAdmins(await listAdmins(token));
+    } catch (err) {
+      showAlert("Failed to load admins: " + friendlyApiError(err));
+    }
   }
 
   useEffect(() => {
@@ -363,33 +354,39 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "profiles" },
         async () => {
-          const nextUsers = await listProfiles();
-          setUsers(nextUsers);
-          setNewUsersBadge((n) => n + 1);
+          try {
+            const nextUsers = await listProfiles();
+            setUsers(nextUsers);
+            setNewUsersBadge((n) => n + 1);
+          } catch (err) {
+            setToast("Live update failed: " + friendlyApiError(err));
+          }
         }
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "profiles" },
         async () => {
-          const nextUsers = await listProfiles();
-          setUsers(nextUsers);
+          try {
+            const nextUsers = await listProfiles();
+            setUsers(nextUsers);
+          } catch (err) {
+            setToast("Live update failed: " + friendlyApiError(err));
+          }
         }
       )
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "orders" },
         async () => {
-          const nextOrders = await fetchAllOrders();
-          const previouslyKnown = knownOrderIdsRef.current;
-          const freshIds = previouslyKnown ? nextOrders.filter((o) => !previouslyKnown.has(o.id)).map((o) => o.id) : [];
-          setOrders(nextOrders);
-          knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
-          if (freshIds.length > 0) {
-            setNewOrderIds((prev) => new Set([...prev, ...freshIds]));
+          try {
+            const nextOrders = await fetchAllOrders();
+            setOrders(nextOrders);
+            knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
+            playNotificationSound();
+          } catch (err) {
+            setToast("Live update failed: " + friendlyApiError(err));
           }
-          setNewOrdersBadge((n) => n + 1);
-          playNotificationSound();
         }
       )
       .subscribe();
@@ -409,19 +406,28 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   // still gets notified even if the websocket silently dropped.
   useEffect(() => {
     if (!authed) return;
+    let wasFailing = false;
     const timer = window.setInterval(async () => {
-      const [nextOrders, nextUsers] = await Promise.all([fetchAllOrders(), listProfiles()]);
-      setOrders(nextOrders);
-      setUsers(nextUsers);
-      if (knownOrderIdsRef.current) {
-        const newOnes = nextOrders.filter((o) => !knownOrderIdsRef.current.has(o.id));
-        if (newOnes.length > 0) {
-          setNewOrdersBadge((n) => n + newOnes.length);
-          setNewOrderIds((prev) => new Set([...prev, ...newOnes.map((o) => o.id)]));
-          playNotificationSound();
+      try {
+        const [nextOrders, nextUsers] = await Promise.all([fetchAllOrders(), listProfiles()]);
+        setOrders(nextOrders);
+        setUsers(nextUsers);
+        if (knownOrderIdsRef.current) {
+          const newOnes = nextOrders.filter((o) => !knownOrderIdsRef.current.has(o.id));
+          if (newOnes.length > 0) {
+            playNotificationSound();
+          }
+        }
+        knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
+        wasFailing = false;
+      } catch (err) {
+        // Only toast on the transition into failing, not every 20s while
+        // still down — a persistent outage shouldn't spam the admin.
+        if (!wasFailing) {
+          wasFailing = true;
+          setToast("Background refresh failed: " + friendlyApiError(err));
         }
       }
-      knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
     }, 20000);
     return () => window.clearInterval(timer);
   }, [authed]);
@@ -476,24 +482,36 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   }
 
   async function handleImageFieldChange(field, file) {
-    const dataUrl = await readFileAsDataUrl(file);
-    setProductForm((current) => ({ ...current, [field]: dataUrl }));
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setProductForm((current) => ({ ...current, [field]: dataUrl }));
+    } catch (err) {
+      showAlert("Failed to read image file: " + friendlyApiError(err));
+    }
   }
 
   async function handleGalleryUpload(files) {
-    const images = [];
-    for (const file of files) {
-      images.push(await readFileAsDataUrl(file));
+    try {
+      const images = [];
+      for (const file of files) {
+        images.push(await readFileAsDataUrl(file));
+      }
+      setProductForm((current) => ({
+        ...current,
+        galleryText: [...current.galleryText.split("\n").filter(Boolean), ...images].join("\n"),
+      }));
+    } catch (err) {
+      showAlert("Failed to read image file: " + friendlyApiError(err));
     }
-    setProductForm((current) => ({
-      ...current,
-      galleryText: [...current.galleryText.split("\n").filter(Boolean), ...images].join("\n"),
-    }));
   }
 
   async function handleVariationImageUpload(index, file) {
-    const dataUrl = await readFileAsDataUrl(file);
-    updateVariation(index, { img: dataUrl });
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateVariation(index, { img: dataUrl });
+    } catch (err) {
+      showAlert("Failed to read image file: " + friendlyApiError(err));
+    }
   }
 
   async function handleAdminLogin(event) {
@@ -662,10 +680,13 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       .filter((variation) => !Number.isNaN(variation.price));
     const minVariationPrice = normalizedVariations.length ? Math.min(...normalizedVariations.map((variation) => variation.price)) : null;
 
+    const nextProductId = productForm.id ? Number(productForm.id) : Date.now();
     const nextProduct = {
-      id: productForm.id ? Number(productForm.id) : Date.now(),
+      id: nextProductId,
       name: productForm.name,
-      slug: productForm.slug || productForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, ""),
+      // Auto-generated slugs get the id appended so two products with the
+      // same name can't collide against the DB's unique constraint on slug.
+      slug: productForm.slug || `${productForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, "")}-${nextProductId}`,
       category: productForm.categories[0],
       categories: productForm.categories,
       price: minVariationPrice ?? Number(productForm.price || 0),
@@ -891,97 +912,43 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     setVariations(nextVariations);
   }
 
-  async function importCsv(file) {
-    await runWithTransition(async () => {
-      const text = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = reject;
-        reader.readAsText(file);
-      });
-      const rows = parseCsv(text);
-      const imported = rows.map((row) => {
-        const categories = (row.categories || row.category || "")
-          .split("|")
-          .flatMap((chunk) => chunk.split(","))
-          .map((value) => value.trim())
-          .filter(Boolean);
-        return {
-          id: Date.now() + Math.floor(Math.random() * 10000),
-          name: row.name,
-          category: categories[0] || "gym-equipment",
-          categories,
-          price: Number(row.price || 0),
-          stockStatus: row.stock_status || "instock",
-          badge: row.badge || "",
-          img: row.img || row.image || "",
-          image: row.img || row.image || "",
-          imgHover: row.img_hover || "",
-          gallery: [],
-          shortDesc: row.short_desc || "",
-          description: row.description || "",
-          featured: String(row.featured || "").toLowerCase() !== "false",
-          reviews: 0,
-          rating: 5,
-        };
-      });
-      await persistProducts([...products, ...imported]);
-      setToast(`Imported ${imported.length} products from CSV.`);
-    });
-  }
-
-  async function optimizeDatabase() {
-    await runWithTransition(async () => {
-      try {
-        let optimizedCount = 0;
-        const nextProducts = [];
-
-        for (const product of products) {
-          const nextProduct = { ...product };
-          for (const field of ["img", "image", "imgHover"]) {
-            if (typeof nextProduct[field] === "string" && nextProduct[field].startsWith("data:image/")) {
-              nextProduct[field] = await compressImage(nextProduct[field], 800, 0.65);
-              optimizedCount += 1;
-            }
-          }
-          if (Array.isArray(nextProduct.gallery)) {
-            nextProduct.gallery = await Promise.all(nextProduct.gallery.map(async (item) => {
-              if (typeof item === "string" && item.startsWith("data:image/")) {
-                optimizedCount += 1;
-                return compressImage(item, 800, 0.65);
-              }
-              return item;
-            }));
-          }
-          if (Array.isArray(nextProduct.variations)) {
-            nextProduct.variations = await Promise.all(nextProduct.variations.map(async (variation) => {
-              if (typeof variation.img === "string" && variation.img.startsWith("data:image/")) {
-                optimizedCount += 1;
-                return { ...variation, img: await compressImage(variation.img, 600, 0.65) };
-              }
-              return variation;
-            }));
-          }
-          nextProducts.push(nextProduct);
-        }
-
-        await persistProducts(nextProducts);
-        setToast(`Optimized ${optimizedCount} images.`);
-      } catch (error) {
-        showAlert(`Image optimization failed: ${error.message}`);
-      }
-    });
-  }
-
   async function migrateImagesAndSyncToSupabase() {
-    await runWithTransition(async () => {
+    seoRenameCancelRef.current = false;
+    setSeoRenameProgress({ done: 0, total: products.length });
+    // Force a real paint before doing any work — if every image already has
+    // the right name, the whole loop below can finish in one synchronous
+    // tick with no real network waits in between, and React would otherwise
+    // batch the "show" and the "hide" (in the finally) together so the modal
+    // never actually appears on screen.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
       const nextProducts = [];
       let migratedCount = 0;
-      for (const product of products) {
+      let failedCount = 0;
+      let stoppedEarly = false;
+      // Tracks every old URL successfully renamed this run, so the old
+      // Storage file can be deleted afterwards instead of left behind as a
+      // permanent duplicate. Deletion happens only once ALL processed
+      // products are accounted for (see below) — in the rare case two
+      // products share the exact same image URL, both need their own turn
+      // to be re-pointed at their own new copy before the shared original
+      // is safe to remove.
+      const renamedOldUrls = new Set();
+      for (const [index, product] of products.entries()) {
+        if (seoRenameCancelRef.current) {
+          stoppedEarly = true;
+          break;
+        }
         const nextProduct = { ...product };
         const prefix = generateSeoPrefix(nextProduct);
         const prefixCheck = prefix ? prefix.slice(0, -1) : "";
+
+        // A product's img/image/cover fields are usually all the exact same
+        // URL (see mapProductFromRow's fallback chain) — without this cache,
+        // each field would independently try to rename that same source URL
+        // to the same destination, and Storage's second copy would collide
+        // with the first ("resource already exists").
+        const renamedCache = new Map();
 
         async function processImage(url, folder) {
           if (!url) return url;
@@ -990,14 +957,21 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
             return uploadBlobToStorage(dataUrlToBlob(url), "webp", folder, prefix);
           } else if (typeof url === "string" && url.startsWith("http")) {
             if (prefixCheck && !url.includes(prefixCheck)) {
+              if (renamedCache.has(url)) {
+                return renamedCache.get(url);
+              }
               try {
                 const newUrl = await renameStorageObject(url, "webp", folder, prefix);
                 if (newUrl) {
                   migratedCount += 1;
+                  renamedCache.set(url, newUrl);
+                  renamedOldUrls.add(url);
                   return newUrl;
                 }
               } catch (e) {
-                console.error("Failed to migrate", url);
+                failedCount += 1;
+                console.error("Failed to migrate", url, e);
+                renamedCache.set(url, url); // don't retry this same URL again for this product
               }
             }
           }
@@ -1022,14 +996,46 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
         }
 
         nextProducts.push(nextProduct);
+        setSeoRenameProgress({ done: index + 1, total: products.length });
       }
 
-      await persistProducts(nextProducts);
-      setToast(`Migrated ${migratedCount} images and synced products.`);
+      // Now that every product has been fully processed, delete the old
+      // Storage file for each successful rename — but only if no product
+      // still references that exact URL (guards the shared-image edge case
+      // above). Without this, every SEO Rename run would leave a permanent
+      // duplicate behind for each renamed image.
+      if (renamedOldUrls.size > 0) {
+        const stillReferenced = new Set();
+        for (const p of nextProducts) {
+          for (const field of ["img", "image", "imgHover", "cover"]) {
+            if (p[field]) stillReferenced.add(p[field]);
+          }
+          (p.gallery || []).forEach((url) => url && stillReferenced.add(url));
+          (p.variations || []).forEach((v) => v?.img && stillReferenced.add(v.img));
+        }
+        const toDelete = [...renamedOldUrls].filter((url) => !stillReferenced.has(url));
+        if (toDelete.length > 0) {
+          await deleteStorageObjects(toDelete);
+        }
+      }
+
+      // Persist whatever was actually processed, even if stopped early —
+      // the products after the stop point are simply untouched, exactly as
+      // they were before this run.
+      await persistProducts(nextProducts.concat(products.slice(nextProducts.length)));
+
+      if (stoppedEarly) {
+        setToast(`Stopped — ${nextProducts.length}/${products.length} products processed (${migratedCount} images migrated).`);
+      } else if (failedCount > 0) {
+        showAlert(`Migrated ${migratedCount} images, but ${failedCount} image(s) failed to migrate — check the console for which URLs, and retry.`);
+      } else {
+        setToast(`Migrated ${migratedCount} images and synced products.`);
+      }
     } catch (error) {
-      showAlert(`Image migration failed: ${error.message}`);
+      showAlert(`Image migration failed: ${friendlyApiError(error)}`);
+    } finally {
+      setSeoRenameProgress(null);
     }
-    });
   }
 
   async function saveCoupon() {
@@ -1064,16 +1070,24 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   async function removeCoupon(code) {
     if (!requireSuperAdmin("delete a coupon")) return;
     await runWithTransition(async () => {
-      const nextCoupons = await deleteCoupon(code);
-      setCoupons(nextCoupons);
-      setToast("Coupon deleted.");
+      try {
+        const nextCoupons = await deleteCoupon(code);
+        setCoupons(nextCoupons);
+        setToast("Coupon deleted.");
+      } catch (err) {
+        showAlert("Failed to delete coupon: " + friendlyApiError(err));
+      }
     });
   }
 
   async function refreshOrders() {
-    const [nextOrders, nextUsers] = await Promise.all([fetchAllOrders(), listProfiles()]);
-    setOrders(nextOrders);
-    setUsers(nextUsers);
+    try {
+      const [nextOrders, nextUsers] = await Promise.all([fetchAllOrders(), listProfiles()]);
+      setOrders(nextOrders);
+      setUsers(nextUsers);
+    } catch (err) {
+      showAlert("Failed to refresh orders: " + friendlyApiError(err));
+    }
   }
 
   async function changeOrderStatus(orderId, status) {
@@ -1184,8 +1198,13 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     const product = products.find(p => p.id === id);
     if (!product) return;
     const payload = { ...product, stockStatus: status, stockCount: count };
-    await setProducts(await upsertProducts([payload]));
-    if (!silent) setToast("Stock updated.");
+    try {
+      await setProducts(await upsertProducts([payload]));
+      if (!silent) setToast("Stock updated.");
+    } catch (err) {
+      if (!silent) showAlert("Failed to update stock: " + friendlyApiError(err));
+      throw err; // let the caller (bulk-sync counter, or commitEdit's catch) react too
+    }
   }
 
   // Pulls live Dolibarr stock for every linked product, concurrency-capped
@@ -1197,6 +1216,8 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     const linked = products.filter(p => p.dolibarr_id);
     const CONCURRENCY = 4;
     let cursor = 0;
+    let failedCount = 0;
+    let syncedCount = 0;
     async function worker() {
       while (cursor < linked.length) {
         const p = linked[cursor++];
@@ -1204,13 +1225,20 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
           const result = await getLiveStock(p.id, p.dolibarr_id);
           if (result.stock_status !== p.stockStatus || result.stock_count !== p.stockCount) {
             await updateProductStock(p.id, result.stock_status, result.stock_count, { silent: true });
+            syncedCount += 1;
           }
         } catch (err) {
+          failedCount += 1;
           console.error("Failed to sync stock for product", p.id, err);
         }
       }
     }
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, linked.length) }, worker));
+    if (failedCount > 0) {
+      showAlert(`Stock sync finished with ${failedCount} product(s) failing to sync (${syncedCount} updated successfully) — check the console for details.`);
+    } else {
+      setToast(`Stock synced for ${syncedCount} product(s).`);
+    }
   }
 
   async function handleAddBrand(e) {
@@ -1502,6 +1530,48 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       unlinkedProductsBadge={unlinkedProductsBadge}
       toast={toast}
     >
+        {seoRenameProgress && createPortal(
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/60 backdrop-blur-[2px] p-4">
+            <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h2 className="text-sm font-black text-slate-800">SEO Rename in progress</h2>
+                <button
+                  onClick={() => { seoRenameCancelRef.current = true; }}
+                  disabled={seoRenameCancelRef.current}
+                  title="Stop"
+                  style={{ cursor: seoRenameCancelRef.current ? "not-allowed" : "pointer" }}
+                  className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+
+              <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-brand-600 transition-all duration-200"
+                  style={{ width: `${seoRenameProgress.total ? (seoRenameProgress.done / seoRenameProgress.total) * 100 : 0}%` }}
+                />
+              </div>
+              <p className="text-xs text-slate-500 font-semibold mt-2">
+                {seoRenameProgress.done}/{seoRenameProgress.total} products processed
+              </p>
+
+              {seoRenameCancelRef.current ? (
+                <p className="text-xs text-amber-600 font-semibold mt-3">Stopping after the current product…</p>
+              ) : (
+                <button
+                  onClick={() => { seoRenameCancelRef.current = true; }}
+                  style={{ cursor: "pointer" }}
+                  className="mt-4 w-full h-10 text-sm font-bold text-red-600 bg-red-50 border border-red-200 rounded-xl hover:bg-red-100 transition-colors"
+                >
+                  Stop
+                </button>
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+
         {section === "dashboard" ? (
           <AdminDashboard
             orders={orders}
@@ -1560,18 +1630,29 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
                 customCategories={customCategories}
                 savedAttributes={attributes}
                 uploadImage={async (file, field) => {
-                  const prefix = generateSeoPrefix({ name: productPageData?.name || "product", categories: [], brand: "" });
-                  const blob = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(new Blob([Uint8Array.from(atob(r.result.split(",")[1]), c => c.charCodeAt(0))], { type: file.type })); r.readAsDataURL(file); });
-                  return uploadBlobToStorage(blob, file.name.split(".").pop(), "products", prefix);
+                  try {
+                    const prefix = generateSeoPrefix({ name: productPageData?.name || "product", categories: [], brand: "" });
+                    const blob = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(new Blob([Uint8Array.from(atob(r.result.split(",")[1]), c => c.charCodeAt(0))], { type: file.type })); r.readAsDataURL(file); });
+                    return await uploadBlobToStorage(blob, file.name.split(".").pop(), "products", prefix);
+                  } catch (err) {
+                    showAlert("Failed to upload image: " + friendlyApiError(err));
+                    return null;
+                  }
                 }}
                 onSave={async (product) => {
-                  const existing = products.find((p) => p.id === product.id);
-                  const payload = existing ? { ...existing, ...product } : { ...product, id: Date.now() };
-                  const { upsertProducts } = await import("../lib/storefrontApi");
-                  await setProducts(await upsertProducts([payload]));
-                  setToast(existing ? "Product updated!" : "Product added!");
-                  setProductMode("list");
-                  setProductPageData(null);
+                  await runWithTransition(async () => {
+                    try {
+                      const existing = products.find((p) => p.id === product.id);
+                      const payload = existing ? { ...existing, ...product } : { ...product, id: Date.now() };
+                      const { upsertProducts } = await import("../lib/storefrontApi");
+                      await setProducts(await upsertProducts([payload]));
+                      setToast(existing ? "Product updated!" : "Product added!");
+                      setProductMode("list");
+                      setProductPageData(null);
+                    } catch (err) {
+                      showAlert("Failed to save product: " + friendlyApiError(err));
+                    }
+                  });
                 }}
                 onCancel={() => { setProductMode("list"); setProductPageData(null); }}
               />
@@ -1585,9 +1666,23 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
                 onView={(product) => { setProductPageData(product); setProductMode("view"); }}
                 onEdit={(product) => { setProductPageData(product); setProductMode("edit"); }}
                 onDelete={handleDeleteProduct}
-                onOptimize={optimizeDatabase}
                 onRenameImages={migrateImagesAndSyncToSupabase}
-                onImportCsv={importCsv}
+                onBulkEditCsv={(ids) => { setBulkCsvIds(ids); setBulkCsvPresetFile(null); setProductMode("bulk_csv"); }}
+                onUploadExcel={(file) => { setBulkCsvIds([]); setBulkCsvPresetFile(file); setProductMode("bulk_csv"); }}
+              />
+            )}
+
+            {/* Bulk CSV edit */}
+            {productMode === "bulk_csv" && (
+              <AdminProductBulkCsv
+                products={products}
+                selectedIds={bulkCsvIds}
+                presetFile={bulkCsvPresetFile}
+                onBack={() => { setBulkCsvPresetFile(null); setProductMode("list"); }}
+                onImportComplete={(nextProducts) => {
+                  setProducts(nextProducts);
+                  setToast("Bulk CSV import complete.");
+                }}
               />
             )}
           </>
@@ -1603,7 +1698,6 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
             getAccessToken={requireAccessToken}
             openOrderId={orderIdToOpen}
             onOpenOrderHandled={() => setOrderIdToOpen(null)}
-            newOrderIds={newOrderIds}
             onOrderSeen={markOrderSeen}
           />
         ) : null}
@@ -1626,6 +1720,24 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
             onDemote={handleDemoteAdmin}
             onDelete={handleDeleteAdmin}
             onCreate={handleCreateAdmin}
+          />
+        ) : null}
+
+        {section === "integration_settings" && isSuperAdmin(currentUser?.role) ? (
+          <AdminIntegrationSettings
+            settings={integrationSettings}
+            getAccessToken={requireAccessToken}
+            onSave={async (next) => {
+              await runWithTransition(async () => {
+                try {
+                  await saveIntegrationSettings(next);
+                  setIntegrationSettings(next);
+                  setToast("Integration settings saved.");
+                } catch (err) {
+                  showAlert("Failed to save integration settings: " + friendlyApiError(err));
+                }
+              });
+            }}
           />
         ) : null}
 

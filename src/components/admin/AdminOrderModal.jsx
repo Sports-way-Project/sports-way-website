@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { formatPrice } from "../../lib/format";
 import { listOrderDocuments, openOrderDocument } from "../../lib/fastapiClient";
 import { showAlert } from "../../lib/dialog.jsx";
+import { friendlyApiError } from "../../lib/apiError";
 
 const STATUS_META = {
   "Processing":       { bg: "bg-blue-50",    text: "text-blue-600",    dot: "bg-blue-400",    border: "border-blue-200"    },
@@ -52,6 +53,7 @@ export function AdminOrderModal({ order, onClose, onStatusChange, getAccessToken
         if (active) setDocuments(docs || []);
       } catch (error) {
         console.error("Failed to load order documents:", error);
+        if (active) showAlert("Failed to load order documents: " + friendlyApiError(error));
       } finally {
         if (active) setLoadingDocs(false);
       }
@@ -67,7 +69,7 @@ export function AdminOrderModal({ order, onClose, onStatusChange, getAccessToken
       const token = await getAccessToken();
       await openOrderDocument(order.order_id, kind, token);
     } catch (error) {
-      showAlert(error.message || "Unable to open that document.");
+      showAlert("Unable to open that document: " + friendlyApiError(error));
     } finally {
       setOpeningDoc(null);
     }

@@ -46,6 +46,7 @@ const NAV = [
   ]},
   { label: "Administration", superadminOnly: true, items: [
     { id: "manage_admins",    label: "Manage Admins", Icon: Icons.Users },
+    { id: "integration_settings", label: "Integrations", Icon: Icons.Link },
   ]},
 ];
 
@@ -56,7 +57,7 @@ const TITLES = {
   product_mapping: "Product Mapping",
   orders: "Orders", coupons: "Coupons", users: "Users",
   clients_partners: "Clients & Partners", blogs: "Blog",
-  manage_admins: "Manage Admins",
+  manage_admins: "Manage Admins", integration_settings: "Integrations",
 };
 
 export function AdminShell({ section, onNavigate, pageTransitioning, currentUser, signOut, undoLastChange, isSuperAdmin,

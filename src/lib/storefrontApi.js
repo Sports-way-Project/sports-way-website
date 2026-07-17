@@ -12,6 +12,7 @@ const SETTINGS_KEYS = {
   clients: "site_clients",
   partners: "site_partners",
   blogs: "site_blogs",
+  integrationSettings: "integration_settings",
 };
 
 export const DEFAULT_COUPONS = [
@@ -82,6 +83,7 @@ function mapProductToRow(product) {
   return {
     id: Number(product.id),
     name: product.name,
+    slug: product.slug || null,
     category: product.category,
     categories: unique(product.categories?.length ? product.categories : getProductCategories(product)),
     price: Number(product.price || 0),
@@ -217,6 +219,7 @@ function mapOrderFromRow(row) {
     items: Array.isArray(row.items) ? row.items : [],
     dolibarr_order_id: row.dolibarr_order_id || null,
     dolibarr_invoice_id: row.dolibarr_invoice_id || null,
+    seen: Boolean(row.seen),
   };
 }
 
@@ -712,6 +715,14 @@ export async function updateOrderStatus(orderId, status) {
   return fetchOrderByOrderId(orderId);
 }
 
+// Persists that an admin has actually opened this specific order — the
+// durable, per-order fact the "new order" badge/highlight/sound are now
+// based on (see migration 013), replacing the old in-memory Set + blanket
+// last-viewed timestamp that reset on every page reload.
+export async function markOrderSeen(orderId) {
+  unwrap(await supabase.from("orders").update({ seen: true }).eq("order_id", orderId));
+}
+
 export function generateSeoPrefix(product) {
   if (!product) return "";
   const parts = [
@@ -755,8 +766,34 @@ export async function renameStorageObject(oldUrl, fileExt = "webp", folder = "pr
   }
   
   const newPath = `${folder}/${sanitizedPrefix}.${fileExt}`;
-  
-  unwrap(await supabase.storage.from(SUPABASE_STORAGE_BUCKET).copy(oldPath, newPath));
+
+  // Bulk SEO Rename fires many of these copy calls back-to-back, and a
+  // transient blip (dropped connection, brief rate-limit) surfaces as a raw
+  // "NetworkError when attempting to fetch resource" — not a real reason to
+  // give up on that one image, so retry a couple of times with backoff
+  // before treating it as an actual failure.
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+    }
+    const { error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).copy(oldPath, newPath);
+    // "Resource already exists" means the destination file is already there
+    // (e.g. a previous run already renamed it, or two fields on the same
+    // product pointed at the same source image) — that's the desired end
+    // state already, not a real failure.
+    if (!error || /already exists/i.test(error.message || "")) {
+      lastError = null;
+      break;
+    }
+    lastError = error;
+    if (!/network ?error/i.test(error.message || "")) {
+      break; // not a transient network issue — no point retrying
+    }
+  }
+  if (lastError) {
+    throw new Error(lastError.message || JSON.stringify(lastError));
+  }
   const { data } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(newPath);
   return data.publicUrl;
 }
@@ -837,4 +874,20 @@ export async function fetchBlogs() {
 
 export async function saveBlogs(data) {
   return saveSetting(SETTINGS_KEYS.blogs, data);
+}
+
+const DEFAULT_INTEGRATION_SETTINGS = {
+  fastapiUrl: "",
+  dolibarrApiUrl: "",
+  dolibarrApiKey: "",
+  dolibarrSyncSecret: "",
+};
+
+export async function fetchIntegrationSettings() {
+  const data = await fetchSetting(SETTINGS_KEYS.integrationSettings, DEFAULT_INTEGRATION_SETTINGS);
+  return { ...DEFAULT_INTEGRATION_SETTINGS, ...(data || {}) };
+}
+
+export async function saveIntegrationSettings(data) {
+  return saveSetting(SETTINGS_KEYS.integrationSettings, data);
 }

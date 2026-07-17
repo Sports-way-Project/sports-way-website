@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { searchDolibarrProducts, FASTAPI_URL } from "../../lib/fastapiClient";
 import { linkProductToDolibarr } from "../../lib/storefrontApi";
+import { showAlert } from "../../lib/dialog.jsx";
+import { friendlyApiError } from "../../lib/apiError";
+import { effectiveMetaTitle, effectiveMetaDescription } from "../../lib/format";
 
 const CATEGORY_TREE = [
   { label:"Gym Equipment",  value:"gym-equipment",  sub:["Cardio","Treadmills","Bikes","Ellipticals","Rowers","Stairs","Strength","Selectorized","Plate Loaded","Cable Motion","Multi Stations","Racks","Benches","Bars","Weights","Accessories"] },
@@ -222,10 +225,15 @@ export function AdminProductEdit({ product, brands = [], customCategories = [], 
   async function handleSave() {
     if (!info.name.trim() || !pricing.price) return;
     setSaving(true);
+    const id = product?.id || Date.now();
+    // Auto-generated slugs get the id appended so two products with the
+    // same name can't collide against the DB's unique constraint on slug —
+    // a manually-typed slug (info.slug) is trusted as-is.
+    const autoSlug = `${info.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}-${id}`;
     const payload = {
       ...(product || {}),
       name:         info.name.trim(),
-      slug:         info.slug || info.name.toLowerCase().replace(/[^a-z0-9]+/g,"-"),
+      slug:         info.slug || autoSlug,
       shortDesc:    info.shortDesc,
       description:  info.description,
       image:        info.cover, img: info.cover, cover: info.cover,
@@ -246,30 +254,39 @@ export function AdminProductEdit({ product, brands = [], customCategories = [], 
       attributes: Object.entries(selectedAttrValues)
         .filter(([, values]) => values.length)
         .map(([name, values]) => ({ name, values })),
-      id:           product?.id || Date.now(),
+      id,
     };
     try { await onSave(payload); } finally { setSaving(false); }
   }
 
   async function handleImgField(field, file) {
     if (!uploadImage) return;
-    const url = await uploadImage(file, field);
-    if (field === "cover") setInfo(i => ({...i, cover: url}));
-    else if (field === "hover") setInfo(i => ({...i, hover: url}));
+    try {
+      const url = await uploadImage(file, field);
+      if (!url) return; // upload failed — uploadImage already alerted the error
+      if (field === "cover") setInfo(i => ({...i, cover: url}));
+      else if (field === "hover") setInfo(i => ({...i, hover: url}));
+    } catch (err) {
+      showAlert("Failed to upload image: " + friendlyApiError(err));
+    }
   }
 
   async function handleGalleryUpload(files) {
-    const newUrls = [];
-    for (const file of files) {
-      if (uploadImage) {
-        const url = await uploadImage(file, "gallery");
-        newUrls.push(url);
-      } else {
-        // Fallback: use object URL for preview when no upload function
-        newUrls.push(URL.createObjectURL(file));
+    try {
+      const newUrls = [];
+      for (const file of files) {
+        if (uploadImage) {
+          const url = await uploadImage(file, "gallery");
+          if (url) newUrls.push(url); // skip failed uploads instead of storing null
+        } else {
+          // Fallback: use object URL for preview when no upload function
+          newUrls.push(URL.createObjectURL(file));
+        }
       }
+      setInfo(i => ({ ...i, gallery: [...(i.gallery || []), ...newUrls] }));
+    } catch (err) {
+      showAlert("Failed to upload image: " + friendlyApiError(err));
     }
-    setInfo(i => ({ ...i, gallery: [...(i.gallery || []), ...newUrls] }));
   }
 
   function removeGalleryImage(idx) {
@@ -362,6 +379,10 @@ export function AdminProductEdit({ product, brands = [], customCategories = [], 
         await linkProductToDolibarr(product.id, result.dolibarr_id, result.ref);
       } catch (e) {
         console.error("Failed to save Dolibarr link to Supabase:", e);
+        // The optimistic "linked" state above would otherwise lie to the
+        // admin — revert it so the UI matches what's actually saved.
+        setDolibarr(d => ({ ...d, status: "error" }));
+        showAlert("Failed to save Dolibarr link: " + friendlyApiError(e));
       }
     }
   }
@@ -438,6 +459,18 @@ export function AdminProductEdit({ product, brands = [], customCategories = [], 
               <div style={{ ...fieldStyle, gridColumn:"1/-1" }}>
                 <label style={labelStyle}>Full Description</label>
                 <textarea style={{...textareaStyle, height:110}} rows={5} value={info.description} onChange={e => setInfo(i=>({...i,description:e.target.value}))} placeholder="Detailed product description shown on product page" />
+              </div>
+              <div style={{ ...fieldStyle, gridColumn: "1/-1" }}>
+                <label style={labelStyle}>SEO Preview</label>
+                <div style={{ background: "#f8fafc", border: "1px solid #f1f5f9", borderRadius: 10, padding: "10px 14px" }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
+                    {effectiveMetaTitle({ name: info.name })} | Buy in Qatar | Sports Way
+                  </p>
+                  <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
+                    {effectiveMetaDescription({ shortDesc: info.shortDesc, description: info.description }) || "No short description or description yet — add one above to fill this in."}
+                  </p>
+                </div>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>Page title and search-result text are generated automatically from the name and short description (or full description) above — nothing else to fill in here.</span>
               </div>
             </div>
 

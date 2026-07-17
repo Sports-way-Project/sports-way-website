@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { formatPrice } from "../../lib/format";
 import { getLiveStock } from "../../lib/fastapiClient";
 import { AdminHero } from "./AdminHero";
+import { showAlert } from "../../lib/dialog.jsx";
+import { friendlyApiError } from "../../lib/apiError";
 
 const STOCK_FILTER_OPTS = [
   { key: "all",         label: "All Products"  },
@@ -75,11 +77,18 @@ export function AdminStocks({ products, onUpdateStock, onOpenProduct }) {
     setEditing(e => ({ ...e, [p.id]: { status: p.stockStatus || "instock", count: p.stockCount ?? "" } }));
   }
 
-  function commitEdit(p) {
+  async function commitEdit(p) {
     const ed = editing[p.id];
     if (!ed) return;
-    onUpdateStock(p.id, ed.status, ed.count === "" ? null : Number(ed.count));
-    setEditing(e => { const n = { ...e }; delete n[p.id]; return n; });
+    try {
+      // onUpdateStock (AdminPage's updateProductStock) already shows its own
+      // error alert — this catch exists only so a failed save leaves the row
+      // in edit mode instead of closing as if it had succeeded.
+      await onUpdateStock(p.id, ed.status, ed.count === "" ? null : Number(ed.count));
+      setEditing(e => { const n = { ...e }; delete n[p.id]; return n; });
+    } catch {
+      // Row stays in edit mode — nothing else to do here.
+    }
   }
 
   function cancelEdit(id) {
@@ -95,10 +104,16 @@ export function AdminStocks({ products, onUpdateStock, onOpenProduct }) {
       // same as everywhere else in the admin (via onUpdateStock's upsert).
       const result = await getLiveStock(p.id, p.dolibarr_id);
       if (result.stock_status !== p.stockStatus || result.stock_count !== p.stockCount) {
-        await onUpdateStock(p.id, result.stock_status, result.stock_count, { silent });
+        // Always silent here — this function's own catch below is the single
+        // place deciding whether to surface an alert, so a manual click
+        // doesn't show two alerts for the same failure.
+        await onUpdateStock(p.id, result.stock_status, result.stock_count, { silent: true });
       }
     } catch (e) {
       console.error("Failed to sync stock from Dolibarr:", e);
+      // Background auto-sync on mount stays quiet (would spam one alert per
+      // linked product) — only the manual per-row button click surfaces it.
+      if (!silent) showAlert("Failed to sync stock from Dolibarr: " + friendlyApiError(e));
     } finally {
       setSyncing(s => { const n = { ...s }; delete n[p.id]; return n; });
     }

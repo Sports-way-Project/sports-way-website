@@ -18,7 +18,7 @@ const STATUS_META = {
 const ALL_STATUSES = ["Pending Payment","Processing","Confirmed","Shipped","Out for Delivery","Delivered","Cancelled","Failed"];
 const PAGE_SIZE = 15;
 
-export function AdminOrders({ orders, onStatusChange, onRefresh, onDelete, canDelete = true, getAccessToken, openOrderId, onOpenOrderHandled, newOrderIds, onOrderSeen }) {
+export function AdminOrders({ orders, onStatusChange, onRefresh, onDelete, canDelete = true, getAccessToken, openOrderId, onOpenOrderHandled, onOrderSeen }) {
   const [search, setSearch]       = useState("");
   const [statusFilter, setStatus] = useState("all");
   const [page, setPage]           = useState(1);
@@ -130,7 +130,7 @@ export function AdminOrders({ orders, onStatusChange, onRefresh, onDelete, canDe
                   </div>
                 </td></tr>
               ) : paged.map(order => {
-                const isNew = newOrderIds?.has(order.id);
+                const isNew = !order.seen;
                 return (
                 <Fragment key={order.id}>
                   <tr className={`border-b border-slate-50 transition-colors cursor-pointer ${isNew ? "bg-blue-50 hover:bg-blue-100/70" : "hover:bg-slate-50/60"}`}

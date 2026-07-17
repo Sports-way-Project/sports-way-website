@@ -1,9 +1,7 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { formatPrice } from "../../lib/format";
 import { useAdminModal } from "./AdminModal";
 import { AdminHero } from "./AdminHero";
-
-const PAGE_SIZE = 20;
 
 const STOCK = {
   instock:     { label: "In Stock",     dot: "bg-emerald-400", bg: "bg-emerald-50",  text: "text-emerald-700", ring: "ring-emerald-200" },
@@ -54,11 +52,15 @@ function Pagination({ page, total, pageSize, onChange }) {
   );
 }
 
-export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, onOptimize, onRenameImages, onImportCsv }) {
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, onRenameImages, onBulkEditCsv, onUploadExcel }) {
   const { showConfirm } = useAdminModal();
   const [search, setSearch] = useState("");
   const [stockF, setStockF] = useState("all");
   const [page, setPage]     = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[1]);
+  const [selected, setSelected] = useState(() => new Set());
   const searchRef = useRef(null);
 
   const counts = useMemo(() => ({
@@ -83,7 +85,31 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
     return list;
   }, [products, search, stockF]);
 
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [pageSize]);
+
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+  const pagedIds = useMemo(() => paged.map(p => p.id), [paged]);
+  const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selected.has(id));
+
+  function toggleOne(id) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllOnPage() {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allPagedSelected) {
+        pagedIds.forEach(id => next.delete(id));
+      } else {
+        pagedIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  }
 
   const FILTERS = [
     { key: "all",         label: "All products" },
@@ -101,17 +127,21 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
         subtitle={`${products.length} products in catalog`}
         actions={
           <>
-            <button onClick={onOptimize}
-              className="h-9 px-4 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors shadow-sm">
+            <button disabled
+              title="Disabled — this only compresses images still stored as raw base64 in the database. Every product now uploads straight to Storage on save, so there's nothing left for this to do on a normally-managed catalog."
+              className="h-9 px-4 text-xs font-semibold text-slate-400 bg-slate-50 border border-slate-200 rounded-xl cursor-not-allowed opacity-60">
               Optimize Images
             </button>
             <button onClick={onRenameImages}
+              title="Uploads any images still stored as base64, and renames existing Storage images to match this product's SEO-friendly name/brand/category prefix"
               className="h-9 px-4 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors shadow-sm">
               SEO Rename
             </button>
-            <label className="h-9 px-4 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors shadow-sm flex items-center">
-              Import CSV
-              <input type="file" accept=".csv" onChange={e => e.target.files?.[0] && onImportCsv(e.target.files[0])} hidden />
+            <label
+              title="Jump straight to the bulk Excel import screen with this file already loaded"
+              className="h-9 px-4 flex items-center text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors shadow-sm">
+              Upload Excel
+              <input type="file" accept=".xlsx,.xls" hidden onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onUploadExcel(f); }} />
             </label>
             <button onClick={onAddNew}
               className="h-9 px-5 flex items-center gap-2 text-sm font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-xl cursor-pointer transition-colors shadow-md shadow-brand-200">
@@ -160,7 +190,30 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
             {filtered.length} result{filtered.length !== 1 ? "s" : ""} for <strong className="text-slate-700">"{search}"</strong>
           </span>
         )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <label className="text-xs font-semibold text-slate-400">Per page</label>
+          <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}
+            className="h-8 px-3 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-xl cursor-pointer outline-none">
+            {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
       </div>
+
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 px-5 py-3 bg-brand-50 border border-brand-200 rounded-2xl">
+          <span className="text-xs font-bold text-brand-700">{selected.size} product{selected.size !== 1 ? "s" : ""} selected</span>
+          <button onClick={() => onBulkEditCsv(Array.from(selected))}
+            className="h-8 px-4 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-lg cursor-pointer transition-colors">
+            Bulk Edit via Excel
+          </button>
+          <button onClick={() => setSelected(new Set())}
+            className="h-8 px-3 text-xs font-semibold text-slate-500 hover:text-slate-700 cursor-pointer">
+            Clear selection
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -168,6 +221,10 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
           <table className="w-full text-left" style={{ borderCollapse:"separate", borderSpacing:0 }}>
             <thead>
               <tr className="border-b-2 border-slate-100">
+                <th className="px-5 py-3.5 w-10">
+                  <input type="checkbox" checked={allPagedSelected} onChange={toggleAllOnPage}
+                    className="w-4 h-4 rounded cursor-pointer accent-brand-600" />
+                </th>
                 {["Image","Product","Categories","Stock","Price","Dolibarr","Actions"].map(h => (
                   <th key={h} className="px-5 py-3.5 text-[11px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap last:text-right">{h}</th>
                 ))}
@@ -176,7 +233,7 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
             <tbody>
               {paged.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-24 text-center">
+                  <td colSpan="8" className="px-6 py-24 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center">
                         <svg className="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>
@@ -198,6 +255,10 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
                   onClick={() => onView(p)}
                   className={`border-b border-slate-50 hover:bg-brand-50/30 transition-colors cursor-pointer ${idx === paged.length - 1 ? "border-b-0" : ""}`}
                 >
+                  <td className="px-5 py-3" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleOne(p.id)}
+                      className="w-4 h-4 rounded cursor-pointer accent-brand-600" />
+                  </td>
                   {/* Image */}
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="relative w-[72px] h-[72px] flex-shrink-0 cursor-pointer" onClick={() => onView(p)}>
@@ -294,7 +355,7 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={filtered.length} pageSize={PAGE_SIZE} onChange={setPage} />
+        <Pagination page={page} total={filtered.length} pageSize={pageSize} onChange={setPage} />
       </div>
     </div>
   );

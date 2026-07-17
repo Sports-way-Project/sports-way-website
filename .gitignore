@@ -4,3 +4,7 @@ dist
 *.msi
 .env
 vite.log
+
+# Environment-specific — differs between local dev, VPS, staging, etc.
+# See public/supabase-config.example.js for the template.
+public/supabase-config.js

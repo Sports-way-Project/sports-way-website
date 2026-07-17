@@ -109,7 +109,9 @@ export function AdminIntegrationSettings({ settings, onSave, getAccessToken }) {
         <strong>Dolibarr fields</strong> are pre-filled from the backend's current <code className="font-mono bg-amber-100 px-1 rounded">.env</code> the
         first time this page loads with nothing saved yet. Once you hit Save, the backend prefers whatever's saved here
         over <code className="font-mono bg-amber-100 px-1 rounded">.env</code> for every Dolibarr call and the Dolibarr sync-secret check — it
-        takes effect within ~30 seconds, no restart needed.
+        takes effect within ~30 seconds, no restart needed. If a saved value here ever ends up wrong (pointing at the wrong
+        Dolibarr instance, a stale API key, etc.), use <strong>"Use file-based (.env) config"</strong> below to clear the
+        override and fall back to whatever's actually correct on the server, then Save.
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-5">
@@ -145,14 +147,25 @@ export function AdminIntegrationSettings({ settings, onSave, getAccessToken }) {
             Dolibarr ERP {loadingDefaults && <span className="text-slate-400 font-normal normal-case">— loading current .env values…</span>}
             {defaultsFailed && <span className="text-amber-600 font-normal normal-case">— couldn't load .env defaults, fields left blank</span>}
           </h2>
-          <button
-            type="button"
-            onClick={() => setShowSecrets((s) => !s)}
-            style={{ cursor: "pointer" }}
-            className="text-[11px] font-bold text-brand-600 hover:text-brand-700"
-          >
-            {showSecrets ? "Hide secrets" : "Show secrets"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setForm((f) => ({ ...f, dolibarrApiUrl: "", dolibarrApiKey: "", dolibarrSyncSecret: "" }))}
+              title="Clears these fields so the backend falls back to its .env file instead of this Supabase override — hit Save afterward to apply"
+              style={{ cursor: "pointer" }}
+              className="text-[11px] font-bold text-slate-500 hover:text-slate-700"
+            >
+              Use file-based (.env) config
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSecrets((s) => !s)}
+              style={{ cursor: "pointer" }}
+              className="text-[11px] font-bold text-brand-600 hover:text-brand-700"
+            >
+              {showSecrets ? "Hide secrets" : "Show secrets"}
+            </button>
+          </div>
         </div>
         <Field
           label="Dolibarr API URL"

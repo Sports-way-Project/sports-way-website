@@ -126,6 +126,7 @@ function mapProfile(row) {
     marketing_opt_in: Boolean(row.marketing_opt_in),
     created_at: row.created_at || null,
     last_login: row.last_login || null,
+    seen: Boolean(row.seen),
   };
 }
 
@@ -721,6 +722,14 @@ export async function updateOrderStatus(orderId, status) {
 // last-viewed timestamp that reset on every page reload.
 export async function markOrderSeen(orderId) {
   unwrap(await supabase.from("orders").update({ seen: true }).eq("order_id", orderId));
+}
+
+// Same durable-flag pattern as markOrderSeen, but bulk — the Users badge
+// clears all at once the moment an admin opens the Users section, rather
+// than per-row (see migration 014).
+export async function markUsersSeen(userIds) {
+  if (!userIds?.length) return;
+  unwrap(await supabase.from("profiles").update({ seen: true }).in("id", userIds));
 }
 
 export function generateSeoPrefix(product) {

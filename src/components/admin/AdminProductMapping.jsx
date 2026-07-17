@@ -44,6 +44,15 @@ const STOCK_META = {
   onbackorder: { label: "Backorder",    bg: "bg-amber-50",   text: "text-amber-700",   ring: "ring-amber-200"   },
 };
 
+function Spinner({ className = "w-3.5 h-3.5" }) {
+  return (
+    <svg className={`${className} animate-spin`} fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  );
+}
+
 function StockPill({ status }) {
   const s = STOCK_META[status] || STOCK_META.instock;
   return (
@@ -306,10 +315,13 @@ export function AdminProductMapping({ products, onImportFromDolibarr, onImportMa
       uploadedUrls.push(await uploadBlobToStorage(blob, ext, folder, prefix));
     }
     const cover = uploadedUrls[0] || "";
+    const baseSlug = slugify(d.label) || "product";
     return {
       id: Date.now() + Math.floor(Math.random() * 10000),
       name: d.label,
-      slug: slugify(d.label) || `product-${d.dolibarr_id}`,
+      // Suffixed with the Dolibarr id so two products sharing a label (e.g.
+      // "ONE YEAR AMC - ...") never collide on products_slug_key.
+      slug: `${baseSlug}-${d.dolibarr_id}`,
       category: "",
       categories: [],
       price: d.price || 0,
@@ -381,28 +393,39 @@ export function AdminProductMapping({ products, onImportFromDolibarr, onImportMa
 
       {/* Bulk-import bar — sits at the top so it's visible as soon as you start checking boxes */}
       {checkedDoliIds.size > 0 && (
-        <div className="bg-brand-700 text-white rounded-2xl shadow-lg px-5 py-3.5 flex items-center gap-4 flex-wrap">
-          <span className="text-sm font-semibold flex-1 min-w-0">
-            {bulkProgress ? `Importing ${bulkProgress.done}/${bulkProgress.total}…` : `${checkedDoliIds.size} Dolibarr product${checkedDoliIds.size > 1 ? "s" : ""} selected`}
-          </span>
-          <button
-            type="button"
-            style={{ cursor: "pointer" }}
-            onClick={importCheckedProducts}
-            disabled={bulkImporting}
-            className="flex-shrink-0 px-4 py-2 text-xs font-bold rounded-xl bg-white text-brand-700 hover:bg-brand-50 disabled:opacity-50 transition-colors"
-          >
-            {bulkImporting ? "Importing…" : `Create ${checkedDoliIds.size} on Website`}
-          </button>
-          <button
-            type="button"
-            style={{ cursor: "pointer" }}
-            onClick={() => setCheckedDoliIds(new Set())}
-            disabled={bulkImporting}
-            className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-50"
-          >
-            ×
-          </button>
+        <div className="bg-brand-700 text-white rounded-2xl shadow-lg px-5 py-3.5 flex flex-col gap-2.5">
+          <div className="flex items-center gap-4 flex-wrap">
+            <span className="text-sm font-semibold flex-1 min-w-0 flex items-center gap-2">
+              {bulkImporting && <Spinner />}
+              {bulkProgress ? `Importing ${bulkProgress.done}/${bulkProgress.total}…` : `${checkedDoliIds.size} Dolibarr product${checkedDoliIds.size > 1 ? "s" : ""} selected`}
+            </span>
+            <button
+              type="button"
+              style={{ cursor: "pointer" }}
+              onClick={importCheckedProducts}
+              disabled={bulkImporting}
+              className="flex-shrink-0 px-4 py-2 text-xs font-bold rounded-xl bg-white text-brand-700 hover:bg-brand-50 disabled:opacity-50 transition-colors"
+            >
+              {bulkImporting ? "Importing…" : `Create ${checkedDoliIds.size} on Website`}
+            </button>
+            <button
+              type="button"
+              style={{ cursor: "pointer" }}
+              onClick={() => setCheckedDoliIds(new Set())}
+              disabled={bulkImporting}
+              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-50"
+            >
+              ×
+            </button>
+          </div>
+          {bulkProgress && (
+            <div className="h-2 rounded-full bg-white/20 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-white transition-[width] duration-300 ease-out"
+                style={{ width: `${Math.round((bulkProgress.done / bulkProgress.total) * 100)}%` }}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -569,7 +592,7 @@ export function AdminProductMapping({ products, onImportFromDolibarr, onImportMa
                       disabled={importingId === d.dolibarr_id || bulkImporting}
                       className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-lg transition-colors disabled:opacity-50"
                     >
-                      {importingId === d.dolibarr_id ? "Importing…" : "Create on Website"}
+                      {importingId === d.dolibarr_id ? (<><Spinner /> Importing…</>) : "Create on Website"}
                     </button>
                   )}
                 </div>

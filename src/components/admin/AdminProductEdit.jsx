@@ -462,13 +462,22 @@ export function AdminProductEdit({ product, brands = [], customCategories = [], 
               </div>
               <div style={{ ...fieldStyle, gridColumn: "1/-1" }}>
                 <label style={labelStyle}>SEO Preview</label>
-                <div style={{ background: "#f8fafc", border: "1px solid #f1f5f9", borderRadius: 10, padding: "10px 14px" }}>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
-                    {effectiveMetaTitle({ name: info.name })} | Buy in Qatar | Sports Way
-                  </p>
-                  <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
-                    {effectiveMetaDescription({ shortDesc: info.shortDesc, description: info.description }) || "No short description or description yet — add one above to fill this in."}
-                  </p>
+                <div style={{ background: "#dbeafe", border: "1px solid #e2e8f0", borderRadius: 10, padding: "16px 20px", fontFamily: "arial, sans-serif" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <img src="/favicon-32x32.png" alt="" style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, marginTop: 1, objectFit: "cover" }} />
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ margin: 0, fontSize: 14, color: "#202124", lineHeight: 1.3 }}>Sports Way</p>
+                      <p style={{ margin: 0, fontSize: 12, color: "#4d5156", lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        sportsway.com › products › {info.slug || "auto-generated-from-name"}
+                      </p>
+                      <p style={{ margin: "4px 0 0", fontSize: 20, lineHeight: 1.3, color: "#1a0dab", overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical" }}>
+                        {effectiveMetaTitle({ name: info.name }) || "Product name"} | Buy in Qatar | Sports Way
+                      </p>
+                      <p style={{ margin: "3px 0 0", fontSize: 14, color: "#4d5156", lineHeight: 1.55, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                        {effectiveMetaDescription({ shortDesc: info.shortDesc, description: info.description }) || "No short description or description yet — add one above to fill this in."}
+                      </p>
+                    </div>
+                  </div>
                 </div>
                 <span style={{ fontSize: 11, color: "#94a3b8" }}>Page title and search-result text are generated automatically from the name and short description (or full description) above — nothing else to fill in here.</span>
               </div>

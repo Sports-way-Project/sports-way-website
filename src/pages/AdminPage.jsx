@@ -73,6 +73,7 @@ import {
   fetchIntegrationSettings,
   saveIntegrationSettings,
   markOrderSeen as markOrderSeenApi,
+  markUsersSeen as markUsersSeenApi,
   upsertProducts,
   deleteStorageObject,
   deleteStorageObjects,
@@ -106,16 +107,6 @@ const initialProductForm = {
   featured: true,
   categories: [],
   brand: "",
-};
-
-const initialCouponForm = {
-  code: "",
-  discountType: "percentage",
-  discount: "",
-  limitPerCoupon: "",
-  limitPerItems: "",
-  limitPerUser: "1",
-  specificProducts: "",
 };
 
 function readFileAsDataUrl(file) {
@@ -194,7 +185,6 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [users, setUsers] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [coupons, setCoupons] = useState([]);
-  const [couponForm, setCouponForm] = useState(initialCouponForm);
   const [brands, setBrands] = useState([]);
   const [customCategories, setCustomCategories] = useState([]);
   const [clients, setClients] = useState([]);
@@ -210,12 +200,12 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
   const [newCategory, setNewCategory] = useState("");
   const [toast, setToast] = useState("");
   const [savingVisibility, setSavingVisibility] = useState(false);
-  const [newUsersBadge, setNewUsersBadge] = useState(0);
-  // Derived straight from each order's persisted `seen` column — a real,
-  // durable per-order fact instead of the old in-memory Set + blanket
-  // last-viewed-timestamp, which reset on every page reload and caused
-  // already-opened orders to get re-flagged as new.
+  // Derived straight from each order's/user's persisted `seen` column — a
+  // real, durable per-row fact instead of an in-memory Set + blanket
+  // last-viewed-timestamp, which reset on every page reload/device and
+  // caused already-viewed rows to get re-flagged as new (migrations 013/014).
   const newOrdersBadge = useMemo(() => orders.filter((o) => !o.seen).length, [orders]);
+  const newUsersBadge = useMemo(() => users.filter((u) => !u.seen).length, [users]);
 
   async function markOrderSeen(orderId) {
     const order = orders.find((o) => o.id === orderId);
@@ -228,13 +218,24 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     }
   }
 
+  async function markUsersSeen() {
+    const unseenIds = users.filter((u) => !u.seen).map((u) => u.id);
+    if (!unseenIds.length) return;
+    setUsers((prev) => prev.map((u) => (unseenIds.includes(u.id) ? { ...u, seen: true } : u)));
+    try {
+      await markUsersSeenApi(unseenIds);
+    } catch (err) {
+      console.error("Failed to persist user seen state:", err);
+    }
+  }
+
   const authed = isAdmin(currentUser?.role);
 
   const { pageTransitioning, navigate, runWithTransition } = useAdminPageTransition(
     (id) => { setSection(id); setProductMode("list"); setProductPageData(null); setBlogMode("list"); setBlogPageData(null); },
     {
       onBadgeClear: (id) => {
-        if (id === "users") { setNewUsersBadge(0); localStorage.setItem("adminLastViewedUsers", new Date().toISOString()); }
+        if (id === "users") markUsersSeen();
       },
     },
   );
@@ -312,12 +313,6 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
       setPartners(nextPartners);
       setBlogs(nextBlogs);
       setIntegrationSettings(nextIntegrationSettings);
-
-      // Users still use the old blanket last-viewed-timestamp heuristic —
-      // only orders got the real per-row `seen` column (migration 013).
-      const lastViewedUsers = localStorage.getItem("adminLastViewedUsers") || 0;
-      const missedUsers = nextUsers.filter(u => new Date(u.created_at).getTime() > new Date(lastViewedUsers).getTime()).length;
-      setNewUsersBadge(missedUsers);
       knownOrderIdsRef.current = new Set(nextOrders.map((o) => o.id));
     };
 
@@ -357,7 +352,6 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
           try {
             const nextUsers = await listProfiles();
             setUsers(nextUsers);
-            setNewUsersBadge((n) => n + 1);
           } catch (err) {
             setToast("Live update failed: " + friendlyApiError(err));
           }
@@ -1038,8 +1032,8 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     }
   }
 
-  async function saveCoupon() {
-    if (!couponForm.code || !couponForm.discount) {
+  async function saveCoupon(form) {
+    if (!form.code || !form.discount) {
       showAlert("Enter coupon code and discount.");
       return;
     }
@@ -1047,19 +1041,18 @@ export function AdminPage({ currentUser, products, requestPasswordReset, setProd
     await runWithTransition(async () => {
       try {
         const nextCoupons = await upsertCoupon({
-          code: couponForm.code.toUpperCase(),
-          discountType: couponForm.discountType,
-          discount: Number(couponForm.discount),
-          limitPerCoupon: couponForm.limitPerCoupon ? Number(couponForm.limitPerCoupon) : null,
-          limitPerItems: couponForm.limitPerItems ? Number(couponForm.limitPerItems) : null,
-          limitPerUser: couponForm.limitPerUser ? Number(couponForm.limitPerUser) : null,
-          specificProducts: couponForm.specificProducts.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean),
+          code: form.code.toUpperCase(),
+          discountType: form.discountType,
+          discount: Number(form.discount),
+          limitPerCoupon: form.limitPerCoupon ?? null,
+          limitPerItems: form.limitPerItems ?? null,
+          limitPerUser: form.limitPerUser ?? null,
+          specificProducts: (form.specificProducts || []).map((item) => item.trim().toLowerCase()).filter(Boolean),
           usedCount: 0,
           userUses: {},
           active: true,
         });
         setCoupons(nextCoupons);
-        setCouponForm(initialCouponForm);
         setToast("Coupon saved.");
       } catch (err) {
         showAlert("Failed to save coupon: " + friendlyApiError(err));

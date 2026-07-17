@@ -225,8 +225,16 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
                   <input type="checkbox" checked={allPagedSelected} onChange={toggleAllOnPage}
                     className="w-4 h-4 rounded cursor-pointer accent-brand-600" />
                 </th>
-                {["Image","Product","Categories","Stock","Price","Dolibarr","Actions"].map(h => (
-                  <th key={h} className="px-5 py-3.5 text-[11px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap last:text-right">{h}</th>
+                {[
+                  { label: "Image" },
+                  { label: "Product" },
+                  { label: "Categories", className: "hidden lg:table-cell" },
+                  { label: "Stock" },
+                  { label: "Price" },
+                  { label: "Dolibarr", className: "hidden md:table-cell" },
+                  { label: "Actions" },
+                ].map(({ label, className = "" }) => (
+                  <th key={label} className={`px-5 py-3.5 text-xs font-black text-slate-400 uppercase tracking-widest whitespace-nowrap last:text-right ${className}`}>{label}</th>
                 ))}
               </tr>
             </thead>
@@ -279,23 +287,23 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
                   </td>
 
                   {/* Product info */}
-                  <td className="px-4 py-3 max-w-[220px]">
-                    <p className="text-sm font-bold text-slate-900 truncate leading-tight">{p.name}</p>
+                  <td className="px-4 py-3 max-w-[420px]">
+                    <p className="text-base font-bold text-slate-900 leading-tight">{p.name}</p>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <span className="text-[10px] font-mono text-slate-400">#{p.id}</span>
-                      {p.brand && <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md">{p.brand}</span>}
-                      {p.featured && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-md">Featured</span>}
+                      <span className="text-xs font-mono text-slate-400">#{p.id}</span>
+                      {p.brand && <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md">{p.brand}</span>}
+                      {p.featured && <span className="text-xs font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-md">Featured</span>}
                     </div>
                   </td>
 
                   {/* Categories */}
-                  <td className="px-4 py-3 max-w-[180px]">
+                  <td className="px-4 py-3 max-w-[180px] hidden lg:table-cell">
                     <div className="flex flex-wrap gap-1">
                       {(p.categories || []).slice(0, 2).map(c => (
-                        <span key={c} className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] font-semibold rounded-lg">{c}</span>
+                        <span key={c} className="px-2 py-0.5 bg-slate-100 text-slate-500 text-xs font-semibold rounded-lg">{c}</span>
                       ))}
                       {(p.categories || []).length > 2 && (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-400 text-[10px] rounded-lg font-semibold">+{p.categories.length - 2}</span>
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-400 text-xs rounded-lg font-semibold">+{p.categories.length - 2}</span>
                       )}
                     </div>
                   </td>
@@ -304,27 +312,27 @@ export function AdminProducts({ products, onAddNew, onView, onEdit, onDelete, on
                   <td className="px-4 py-3">
                     <StockPill status={p.stockStatus} />
                     {p.stockCount != null && (
-                      <p className="text-[10px] text-slate-400 font-medium mt-1">{p.stockCount} units</p>
+                      <p className="text-xs text-slate-400 font-medium mt-1">{p.stockCount} units</p>
                     )}
                   </td>
 
                   {/* Price */}
                   <td className="px-4 py-3">
-                    <p className="text-sm font-black text-slate-900">{formatPrice(p.price || 0)}</p>
+                    <p className="text-base font-black text-slate-900">{formatPrice(p.price || 0)}</p>
                     {p.oldPrice && (
-                      <p className="text-[11px] text-slate-400 line-through font-medium">{formatPrice(p.oldPrice)}</p>
+                      <p className="text-xs text-slate-400 line-through font-medium">{formatPrice(p.oldPrice)}</p>
                     )}
                   </td>
 
                   {/* Dolibarr */}
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 hidden md:table-cell">
                     {p.dolibarr_ref ? (
-                      <div className="flex items-center gap-1.5">
-                        <span className="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0" />
-                        <span className="text-[11px] font-semibold text-blue-600 font-mono">{p.dolibarr_ref}</span>
-                      </div>
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-blue-600 bg-blue-50 ring-1 ring-blue-200 rounded-full">
+                        <span className="w-1.5 h-1.5 bg-blue-400 rounded-full flex-shrink-0" />
+                        Linked
+                      </span>
                     ) : (
-                      <span className="text-[11px] text-slate-300 italic">Not linked</span>
+                      <span className="text-xs text-slate-300 italic">Not linked</span>
                     )}
                   </td>
 

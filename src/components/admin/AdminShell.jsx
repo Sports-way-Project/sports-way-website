@@ -272,8 +272,8 @@ export function AdminShell({ section, onNavigate, pageTransitioning, currentUser
         )}
 
         {/* scrollable page content — key={section} replays the fade-in on every navigation */}
-        <div style={{ flex:1, overflowY:"auto" }} className="admin-scroll">
-          <div key={section} className="admin-page-transition">
+        <div style={{ flex:1, overflowY:"auto", overflowX:"hidden", minWidth:0 }} className="admin-scroll">
+          <div key={section} className="admin-page-transition" style={{ minWidth:0 }}>
             {children}
           </div>
         </div>

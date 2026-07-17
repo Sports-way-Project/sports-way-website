@@ -1,6 +1,10 @@
--- Sports Way Trading — Supabase (Postgres) schema reference
--- WARNING: This schema is for context only and is not meant to be run.
--- Table order and constraints may not be valid for execution.
+-- Sports Way Trading — Supabase (Postgres) base schema.
+-- Runnable as-is (table order/constraints verified), but this only covers
+-- the original columns — it predates migrations 001-013 (dolibarr_ref,
+-- payment_reference, company, billing_details, seen, role/RLS security,
+-- etc.). Run this FIRST in a new project, then run every file in
+-- migrations/ in order (001 through the latest) to reach full parity with
+-- production. See UPDATES.md for what each migration adds and why.
 
 CREATE TABLE public.profiles (
   id uuid NOT NULL,
@@ -23,7 +27,7 @@ CREATE TABLE public.products (
   id bigint NOT NULL,
   name text NOT NULL,
   category text NOT NULL,
-  categories ARRAY NOT NULL DEFAULT '{}'::text[],
+  categories text[] NOT NULL DEFAULT '{}'::text[],
   price numeric NOT NULL DEFAULT 0,
   old_price numeric,
   stock_status text NOT NULL DEFAULT 'instock'::text CHECK (stock_status = ANY (ARRAY['instock'::text, 'outofstock'::text, 'onbackorder'::text])),
@@ -33,7 +37,7 @@ CREATE TABLE public.products (
   image text NOT NULL DEFAULT ''::text,
   img_hover text NOT NULL DEFAULT ''::text,
   cover text NOT NULL DEFAULT ''::text,
-  gallery ARRAY NOT NULL DEFAULT '{}'::text[],
+  gallery text[] NOT NULL DEFAULT '{}'::text[],
   short_desc text NOT NULL DEFAULT ''::text,
   description text NOT NULL DEFAULT ''::text,
   featured boolean NOT NULL DEFAULT false,
@@ -72,7 +76,7 @@ CREATE TABLE public.cart_items (
   image text NOT NULL DEFAULT ''::text,
   qty integer NOT NULL CHECK (qty > 0),
   category text NOT NULL DEFAULT ''::text,
-  categories ARRAY NOT NULL DEFAULT '{}'::text[],
+  categories text[] NOT NULL DEFAULT '{}'::text[],
   variation jsonb,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
@@ -97,7 +101,7 @@ CREATE TABLE public.coupons (
   limit_per_coupon integer,
   limit_per_items integer,
   limit_per_user integer,
-  specific_products ARRAY NOT NULL DEFAULT '{}'::text[],
+  specific_products text[] NOT NULL DEFAULT '{}'::text[],
   used_count integer NOT NULL DEFAULT 0,
   user_uses jsonb NOT NULL DEFAULT '{}'::jsonb,
   active boolean NOT NULL DEFAULT true,
